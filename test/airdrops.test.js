@@ -126,6 +126,7 @@ const config = require('../src/config');
 let app;
 
 beforeAll(() => {
+  app = require('../src/index').app;
   const { app: importedApp } = require('../src/index');
   app = importedApp;
 });

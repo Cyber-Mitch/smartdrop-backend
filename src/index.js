@@ -120,6 +120,13 @@ const server = app.listen(config.port, () => {
   indexerPoller.start();
 });
 
+let server;
+
+if (require.main === module) {
+  server = app.listen(config.port, () => {
+    logger.info(`SmartDrop backend running on port ${config.port}`);
+    priceRefreshJob.start();
+  });
 process.on('SIGTERM', async () => {
   logger.info('SIGTERM received, shutting down');
   priceRefreshJob.stop();

@@ -25,6 +25,8 @@
     "stellar-sdk": "^11.3.0",
     "swagger-ui-express": "^5.0.1",
     "winston": "^3.14.0",
+    "zod": "^4.4.3",
+    "winston-daily-rotate-file": "^5.0.0"
     "winston-daily-rotate-file": "^5.0.0",
     "ws": "^8.21.0",
     "yamljs": "^0.3.0",
