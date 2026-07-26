@@ -9,7 +9,9 @@ const priceOracle = require('./services/priceOracle');
 const priceRefreshJob = require('./jobs/priceRefresh');
 const webhookRetryWorker = require('./jobs/webhookRetryWorker');
 const airdropExpiryJob = require('./jobs/airdropExpiry');
+const { warmCache } = require('./startup/cacheWarm');
 const buildCorsMiddleware = require('./middleware/cors');
+const buildRateLimit = require('./middleware/rateLimit');
 const { requestIdMiddleware } = require('./middleware/requestId');
 const { requireApiKey } = require('./middleware/auth');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
@@ -32,7 +34,7 @@ let server = {
 app.use(requestIdMiddleware);
 app.use(helmet());
 app.use(buildCorsMiddleware(config.corsAllowedOrigins));
-app.use(express.json());
+app.use(express.json({ limit: config.airdrops.jsonMaxBytes }));
 
 app.get('/health', (req, res) => {
   const redisConnected = cache.isConnected();
@@ -87,12 +89,20 @@ app.get('/health', (req, res) => {
   });
 });
 
+const globalApiLimit = buildRateLimit({
+  windowSeconds: Math.floor(config.rateLimit.windowMs / 1000),
+  max: config.rateLimit.max,
+  keyPrefix: 'api',
+});
+
+app.use('/api/v1', globalApiLimit);
 app.use('/api/v1', pricesRouter);
 app.use('/api/v1', keysRouter);
 app.use('/api/v1/alerts', requireApiKey());
 app.use('/api/v1', alertsRouter);
 app.use('/api/v1', webhooksRouter);
 app.use('/api/v1', airdropsRouter);
+app.use('/api-docs', globalApiLimit);
 app.use('/api-docs', apiDocsRouter);
 
 app.use(notFoundHandler);
@@ -112,6 +122,18 @@ function shutdown(signal) {
 }
 
 if (require.main === module) {
+  startServer().catch((err) => {
+    logger.error('Startup failed', { error: err.message });
+    process.exit(1);
+  });
+
+  process.on('SIGTERM', shutdown('SIGTERM'));
+  process.on('SIGINT', shutdown('SIGINT'));
+}
+
+async function startServer() {
+  await warmCache(config.watchedAssets);
+
   server = app.listen(config.port, () => {
     logger.info(`SmartDrop backend running on port ${config.port}`);
     priceWebSocket.attach(server);
@@ -119,9 +141,17 @@ if (require.main === module) {
     webhookRetryWorker.start();
     airdropExpiryJob.start();
   });
+  module.exports.server = server;
 
-  process.on('SIGTERM', shutdown('SIGTERM'));
-  process.on('SIGINT', shutdown('SIGINT'));
+  return server;
 }
 
 module.exports = { app, server };
+module.exports = app;
+module.exports.app = app;
+module.exports.server = server || {
+  close(callback) {
+    if (callback) callback();
+  },
+};
+module.exports.startServer = startServer;

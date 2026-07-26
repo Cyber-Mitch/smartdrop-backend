@@ -203,7 +203,7 @@ describe('airdrops service', () => {
   });
 
   describe('scanIds (#88)', () => {
-    test('pages through every ID in the set across multiple SSCAN batches', async () => {
+    test('pages through every ID in the set across multiple ZSCAN batches', async () => {
       for (let i = 0; i < 5; i++) {
         await airdropsService.create({
           name: `Airdrop ${i}`,
