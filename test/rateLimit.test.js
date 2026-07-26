@@ -13,11 +13,13 @@ jest.mock('../src/logger', () => ({
 }));
 
 const buildRateLimit = require('../src/middleware/rateLimit');
+const { errorHandler } = require('../src/middleware/errorHandler');
 
 function buildApp(limiter) {
   const app = express();
   app.use(limiter);
   app.get('/test', (_req, res) => res.json({ ok: true }));
+  app.use(errorHandler);
   return app;
 }
 
@@ -38,7 +40,9 @@ describe('rateLimit middleware', () => {
     await request(app).get('/test');
     const blocked = await request(app).get('/test');
     expect(blocked.status).toBe(429);
-    expect(blocked.body.error).toBe('Too many requests');
+    expect(blocked.body.error).toMatchObject({ code: 'RATE_LIMITED' });
+    expect(blocked.body.error.details.retry_after_seconds).toBeGreaterThan(0);
+    expect(blocked.headers['retry-after']).toBeDefined();
   });
 
   test('throws when configured with invalid options', () => {
