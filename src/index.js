@@ -17,6 +17,8 @@ const { requireApiKey } = require('./middleware/auth');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const pricesRouter = require('./routes/prices');
 const alertsRouter = require('./routes/alerts');
+const indexerRouter = require('./routes/indexer');
+const indexerPoller = require('./indexer/runtime');
 const keysRouter = require('./routes/keys');
 const webhooksRouter = require('./routes/webhooks');
 const airdropsRouter = require('./routes/airdrops');
@@ -103,6 +105,7 @@ app.use('/api/v1', pricesRouter);
 app.use('/api/v1', keysRouter);
 app.use('/api/v1/alerts', requireApiKey());
 app.use('/api/v1', alertsRouter);
+app.use('/api/v1', indexerRouter);
 app.use('/api/v1', webhooksRouter);
 app.use('/api/v1', airdropsRouter);
 app.use('/api-docs', globalApiLimit);
@@ -111,6 +114,29 @@ app.use('/api-docs', apiDocsRouter);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
+const server = app.listen(config.port, () => {
+  logger.info(`SmartDrop backend running on port ${config.port}`);
+  priceRefreshJob.start();
+  indexerPoller.start();
+});
+
+process.on('SIGTERM', async () => {
+  logger.info('SIGTERM received, shutting down');
+  priceRefreshJob.stop();
+  indexerPoller.stop();
+  server.close();
+  await cache.disconnect();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  logger.info('SIGINT received, shutting down');
+  priceRefreshJob.stop();
+  indexerPoller.stop();
+  server.close();
+  await cache.disconnect();
+  process.exit(0);
+});
 function shutdown(signal) {
   return async () => {
     logger.info(`${signal} received, shutting down`);
