@@ -2,6 +2,8 @@ const express = require('express');
 const multer = require('multer');
 const csv = require('csv-parser');
 const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
+const config = require('../config');
 const airdropsService = require('../services/airdrops');
 const logger = require('../logger');
 const AppError = require('../errors/AppError');
@@ -29,6 +31,81 @@ function validateWithCurrentLedger(schemaFactory) {
     } catch (err) {
       logger.error('Airdrop validation error', { error: err.message });
       return next(err);
+const buildRateLimit = require('../middleware/rateLimit');
+const { StrKey } = require('stellar-sdk');
+
+const router = express.Router();
+const CSV_PARSE_CHUNK_BYTES = 64 * 1024;
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: config.airdrops.csvMaxBytes },
+});
+
+const createAirdropLimit = buildRateLimit({
+  windowSeconds: config.airdrops.rateLimit.windowSeconds,
+  max: config.airdrops.rateLimit.max,
+  keyPrefix: 'airdrops_create',
+});
+
+const addRecipientsLimit = buildRateLimit({
+  windowSeconds: config.airdrops.rateLimit.windowSeconds,
+  max: config.airdrops.rateLimit.max,
+  keyPrefix: 'airdrops_recipients',
+});
+
+function uploadRecipientsFile(req, res, next) {
+  upload.single('file')(req, res, (err) => {
+    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+      return next(new AppError(
+        'PAYLOAD_TOO_LARGE',
+        `CSV file cannot exceed ${config.airdrops.csvMaxBytes} bytes`,
+        413,
+        { max_bytes: config.airdrops.csvMaxBytes }
+      ));
+    }
+    return next(err);
+  });
+}
+
+function isValidStellarAddress(address) {
+  try {
+    return StrKey.isValidEd25519PublicKey(address);
+  } catch {
+    return false;
+  }
+}
+
+function validateAirdropCreate(body, currentLedger) {
+  const { name, asset, asset_issuer, total_amount, expiry_ledger, recipients = [] } = body;
+
+  if (!name || typeof name !== 'string') {
+    return 'name is required and must be a string';
+  }
+  if (!asset || typeof asset !== 'string' || !/^[A-Z0-9]{1,12}$/i.test(asset)) {
+    return 'asset is required and must be 1-12 alphanumeric characters';
+  }
+  if (!asset_issuer || !isValidStellarAddress(asset_issuer)) {
+    return 'asset_issuer is required and must be a valid Stellar address';
+  }
+  if (typeof total_amount !== 'number' || total_amount <= 0) {
+    return 'total_amount is required and must be a positive number';
+  }
+  if (typeof expiry_ledger !== 'number' || expiry_ledger <= currentLedger) {
+    return `expiry_ledger is required and must be greater than current ledger (${currentLedger})`;
+  }
+  if (recipients.length > config.airdrops.maxRecipients) {
+    return 'recipients cannot exceed 10,000';
+  }
+
+  const recipientSet = new Set();
+  let sum = 0;
+  for (let i = 0; i < recipients.length; i++) {
+    const r = recipients[i];
+    if (!r.address || !isValidStellarAddress(r.address)) {
+      return `recipient ${i}: invalid Stellar address`;
+    }
+    if (recipientSet.has(r.address)) {
+      return `recipient ${i}: duplicate address ${r.address}`;
     }
   };
 }
@@ -44,24 +121,34 @@ function parseRecipients(recipients, next) {
 }
 
 async function parseCSV(buffer) {
-  return new Promise((resolve, reject) => {
-    const results = [];
-    const stream = Readable.from(buffer);
-    stream
-      .pipe(csv())
-      .on('data', (data) => {
-        const address = data.address || data.Address || data.ADDRESS;
-        const amount = parseFloat(data.amount || data.Amount || data.AMOUNT);
-        if (address && !isNaN(amount)) {
-          results.push({ address, amount });
-        }
-      })
-      .on('end', () => resolve(results))
-      .on('error', reject);
+  const results = [];
+  let rowCount = 0;
+  const chunks = (function* chunkBuffer() {
+    for (let offset = 0; offset < buffer.length; offset += CSV_PARSE_CHUNK_BYTES) {
+      yield buffer.subarray(offset, offset + CSV_PARSE_CHUNK_BYTES);
+    }
+  }());
+
+  await pipeline(Readable.from(chunks), csv(), async (rows) => {
+    for await (const data of rows) {
+      rowCount += 1;
+      if (rowCount > config.airdrops.maxRecipients) {
+        throw new AppError('VALIDATION_ERROR', 'recipients cannot exceed 10,000', 400);
+      }
+
+      const address = data.address || data.Address || data.ADDRESS;
+      const amount = parseFloat(data.amount || data.Amount || data.AMOUNT);
+      if (address && !Number.isNaN(amount)) {
+        results.push({ address, amount });
+      }
+    }
   });
+
+  return results;
 }
 
 router.post('/airdrops', validateWithCurrentLedger(airdropCreateBodySchema), async (req, res, next) => {
+router.post('/airdrops', createAirdropLimit, async (req, res, next) => {
   try {
     const airdrop = await airdropsService.create(req.validated.body);
     return res.status(201).json(airdrop);
@@ -135,6 +222,7 @@ router.post('/airdrops/:id/cancel', validateRouteIdParams, async (req, res, next
 });
 
 router.post('/airdrops/:id/recipients', validateRouteIdParams, upload.single('file'), validateRecipientBody, async (req, res, next) => {
+router.post('/airdrops/:id/recipients', addRecipientsLimit, uploadRecipientsFile, async (req, res, next) => {
   try {
     const airdrop = await airdropsService.get(req.params.id);
     if (!airdrop) {
@@ -150,6 +238,27 @@ router.post('/airdrops/:id/recipients', validateRouteIdParams, upload.single('fi
       recipients = req.validated.body.recipients;
     } else {
       return next(new AppError('VALIDATION_ERROR', 'recipients or file is required', 400));
+    }
+
+    if (recipients.length > config.airdrops.maxRecipients) {
+      return next(new AppError('VALIDATION_ERROR', 'recipients cannot exceed 10,000', 400));
+    }
+
+    const recipientSet = new Set();
+    let sum = 0;
+    for (let i = 0; i < recipients.length; i++) {
+      const r = recipients[i];
+      if (!r.address || !isValidStellarAddress(r.address)) {
+        return next(new AppError('VALIDATION_ERROR', `recipient ${i}: invalid Stellar address`, 400));
+      }
+      if (recipientSet.has(r.address)) {
+        return next(new AppError('VALIDATION_ERROR', `recipient ${i}: duplicate address ${r.address}`, 400));
+      }
+      recipientSet.add(r.address);
+      if (typeof r.amount !== 'number' || r.amount <= 0) {
+        return next(new AppError('VALIDATION_ERROR', `recipient ${i}: amount must be a positive number`, 400));
+      }
+      sum += r.amount;
     }
 
     await airdropsService.addRecipients(req.params.id, recipients);

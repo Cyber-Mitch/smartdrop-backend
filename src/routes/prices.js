@@ -1,6 +1,8 @@
 const express = require('express');
+const config = require('../config');
 const { requireApiKey } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
+const buildRateLimit = require('../middleware/rateLimit');
 const priceOracle = require('../services/priceOracle');
 const AppError = require('../errors/AppError');
 const { priceParamsSchema, priceQuerySchema } = require('../validation/schemas');
@@ -9,6 +11,19 @@ const router = express.Router();
 
 const validatePriceParams = validate(priceParamsSchema, 'params');
 const validatePriceQuery = validate(priceQuerySchema, 'query');
+const priceLimit = buildRateLimit({
+  windowSeconds: config.priceRateLimit.windowSeconds,
+  max: config.priceRateLimit.max,
+  keyPrefix: 'prices',
+});
+
+router.use(priceLimit);
+
+function validateAssetCode(assetCode) {
+  if (!assetCode || typeof assetCode !== 'string') return false;
+  if (assetCode.length < 1 || assetCode.length > 12) return false;
+  return /^[A-Z0-9]+$/.test(assetCode);
+}
 
 router.get('/prices/:asset_code', validatePriceParams, validatePriceQuery, async (req, res, next) => {
   try {

@@ -31,6 +31,24 @@ Multi-source price oracle that fetches and caches USD prices for Stellar assets.
 - Price anomaly logging (>20% changes)
 - Fallback chain: DEX → CoinGecko → CoinMarketCap → cached
 
+### Soroban Event Indexer
+
+Polls Soroban RPC for SmartDrop contract events and stores decoded event state in Redis so the API can answer claim-status queries without live RPC calls on every request.
+
+**Indexed events:**
+- `airdrop_created`
+- `recipient_added`
+- `token_claimed`
+- `airdrop_expired`
+
+**Features:**
+- Configurable contract ID, RPC URL, poll interval, poll limit, and start ledger
+- Last indexed ledger checkpoint persisted in Redis
+- Raw XDR and decoded event data retained for each indexed event
+- Aggregated airdrop status, recipient lists, recipient claim history, and indexer status endpoints
+- RPC errors are logged and the poller continues on the next interval
+
+## Setup
 ### Webhook Delivery System
 
 Registers subscriber endpoints for SmartDrop lifecycle events and delivers signed JSON payloads with retry tracking.
@@ -39,7 +57,7 @@ Registers subscriber endpoints for SmartDrop lifecycle events and delivers signe
 - `airdrop.created`
 - `airdrop.executing`
 - `airdrop.completed`
-- `airdrop.failed`
+- `airdrop.failed` — fired automatically when an airdrop expires (see below), in addition to any other failure path
 - `recipient.claimed`
 
 **Features:**
@@ -48,6 +66,28 @@ Registers subscriber endpoints for SmartDrop lifecycle events and delivers signe
 - At-least-once delivery attempts with exponential backoff
 - Delivery logs with response code, error, duration, and attempt count
 - Dead-letter storage after retry exhaustion
+
+### Airdrop Expiry Reconciliation
+
+Airdrops carry an `expiry_ledger`, validated as being in the future only at
+creation/update time. A background job (`src/jobs/airdropExpiry.js`, same
+`start()`/`stop()` pattern as the price-refresh and webhook-retry jobs)
+periodically re-checks that condition against the live network:
+
+- Every `AIRDROP_EXPIRY_CHECK_INTERVAL_SECONDS` (default 60s), fetches the
+  current Horizon ledger sequence and scans every airdrop still in a
+  non-terminal status (`draft`, `executing`).
+- Any airdrop whose `expiry_ledger` has passed is atomically transitioned to
+  `expired` and fires an `airdrop.failed` webhook event (`data.reason:
+  "expired"`) to every subscriber registered for it — no client action
+  required.
+- The transition is idempotent: re-running the check against an
+  already-expired airdrop is a guaranteed no-op, so the webhook fires
+  exactly once per airdrop even if the job runs again before anything else
+  changes its status.
+- If Horizon is temporarily unreachable, the job logs a warning and skips
+  that cycle rather than crashing — airdrops are simply re-checked on the
+  next tick.
 
 ---
 
@@ -98,6 +138,12 @@ The application reads configurations from the `.env` file at the root.
 | `REDIS_URL` | Redis connection string | redis://redis:6379 | No |
 | `DATABASE_URL` | PostgreSQL connection string | postgres://smartdrop:smartdrop@postgres:5432/smartdrop | No |
 | `STELLAR_HORIZON_URL` | Horizon API URL | https://horizon.stellar.org | No |
+| `SOROBAN_RPC_URL` | Soroban RPC URL for contract event polling | https://soroban-rpc.mainnet.stellar.gateway.fm | No |
+| `SMARTDROP_CONTRACT_ID` | SmartDrop contract ID to index | undefined | Yes, for indexer |
+| `INDEXER_ENABLED` | Enable Soroban event polling | true | No |
+| `INDEXER_POLL_INTERVAL_MS` | Soroban event polling interval in milliseconds | 5000 | No |
+| `INDEXER_POLL_LIMIT` | Maximum events requested per poll | 100 | No |
+| `INDEXER_START_LEDGER` | First ledger to scan when no checkpoint exists | 0 | No |
 | `USDC_ISSUER` | USDC issuer address | GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335AX2OBFLDTQLNUEHRGPTM6RIA | No |
 | `COINGECKO_API_KEY` | CoinGecko API key | undefined | No |
 | `COINMARKETCAP_API_KEY` | CoinMarketCap API key | undefined | No |
@@ -133,7 +179,14 @@ The application reads configurations from the `.env` file at the root.
 | `PRICE_REFRESH_INTERVAL_SECONDS` | Refresh interval in seconds | 30 | No |
 | `PRICE_STALE_THRESHOLD_MINUTES` | Stale threshold in minutes | 5 | No |
 | `PRICE_ANOMALY_THRESHOLD_PCT` | Anomaly detection threshold % | 20 | No |
+| `CIRCUIT_BREAKER_FAILURE_THRESHOLD` | Source failures before opening a price-source circuit | 3 | No |
+| `CIRCUIT_BREAKER_SUCCESS_THRESHOLD` | Half-open successes required to close a circuit | 1 | No |
+| `CIRCUIT_BREAKER_TIMEOUT_MS` | Open-circuit cool-down before a half-open probe | 30000 | No |
 | `ADMIN_API_KEY` | Bootstrap admin bearer token for API key management | empty | Yes, for protected endpoints |
+| `AIRDROP_CSV_MAX_BYTES` | Maximum recipient CSV upload size in bytes | 5242880 (5 MiB) | No |
+| `AIRDROP_JSON_MAX_BYTES` | Maximum JSON request body size; 2 MiB accommodates 10,000 inline recipients | 2097152 (2 MiB) | No |
+| `AIRDROP_RATELIMIT_WINDOW` | Per-IP airdrop mutation rate-limit window in seconds | 60 | No |
+| `AIRDROP_RATELIMIT_MAX` | Maximum create or recipient-add requests per window and IP | 10 | No |
 | `LOG_LEVEL` | Logging level: `debug`, `info`, `warn`, or `error` | info | No |
 
 
@@ -177,6 +230,8 @@ Requires `Authorization: Bearer <api_key>`.
 
 Protected endpoints use `Authorization: Bearer <api_key>`. Set `ADMIN_API_KEY` to a 32-byte hex token for bootstrap access, then create scoped API keys with the key-management endpoints.
 
+The bootstrap admin key is compared using constant-time checks over fixed-length SHA-256 digests so invalid guesses cannot short-circuit on matching prefixes or raw string length.
+
 ```
 GET /api/v1/keys
 POST /api/v1/keys
@@ -201,19 +256,76 @@ GET    /api/v1/webhooks/:id/deliveries
 
 ```
 GET /health
-
 ```
 
-**Response:**
+Returns the overall health of the service and its dependencies.
+
+**Response fields:**
+
+| Field | Description |
+|-------|-------------|
+| `status` | Overall health: `ok`, `degraded`, or `unhealthy` |
+| `timestamp` | ISO-8601 time of the response |
+| `redis.connected` | `true` when the Redis client is connected |
+| `jobs.price_refresh` | Health of the background price-refresh cron job |
+| `jobs.webhook_retry_worker` | Health of the webhook retry worker |
+| `database` | Reports `configured: true, checked: false, status: "unused"` — no active DB health probe |
+| `price_source_circuits` | Per-source circuit-breaker state (open/closed) |
+
+**Health states:**
+
+| State | Meaning |
+|-------|---------|
+| `ok` | Redis connected; all jobs running normally |
+| `degraded` | A job has not yet completed its first tick (startup grace period) |
+| `unhealthy` | Redis is disconnected, or a job has stalled past its grace period |
+
+**Job health fields** (`jobs.price_refresh` / `jobs.webhook_retry_worker`):
+
+| Field | Description |
+|-------|-------------|
+| `healthy` | `true` while the job is running within its expected interval |
+| `last_success_at` | ISO-8601 timestamp of the last successful tick, or `null` |
+| `last_error` | Error message from the last failed tick, or `null` |
+| `stalled` | `true` when no successful tick has occurred within 2× the job interval |
+
+**Example response:**
 
 ```json
 {
   "status": "ok",
-  "timestamp": "2024-01-15T10:30:00.000Z"
+  "timestamp": "2024-01-15T10:30:00.000Z",
+  "redis": { "connected": true },
+  "jobs": {
+    "price_refresh": {
+      "healthy": true,
+      "last_success_at": "2024-01-15T10:29:55.000Z",
+      "last_error": null,
+      "stalled": false
+    },
+    "webhook_retry_worker": {
+      "healthy": true,
+      "last_success_at": "2024-01-15T10:29:58.000Z",
+      "last_error": null,
+      "stalled": false
+    }
+  },
+  "database": { "configured": true, "checked": false, "status": "unused" },
+  "price_source_circuits": [
+    { "source": "coingecko", "open": false, "openUntil": null },
+    { "source": "coinmarketcap", "open": false, "openUntil": null }
+  ]
 }
-
 ```
 
+### Indexed Airdrop Data
+
+```
+GET /api/v1/airdrops/:id/status
+GET /api/v1/airdrops/:id/recipients
+GET /api/v1/recipients/:address/claims
+GET /api/v1/indexer/status
+```
 ---
 
 ## Usage Examples
@@ -360,6 +472,7 @@ Express tip: capture the raw body via `express.json({ verify: (req, _res, buf) =
 - **Retryable**: network errors, HTTP 5xx, 408, 429.
 - **Not retried**: HTTP 4xx (except 408/429). These are marked `failed` immediately so a misconfigured consumer cannot be retried into the ground.
 - Each delivery is logged in `webhook_deliveries` (Redis-backed today, drop-in PG migration documented in `src/repositories/deliveryRepository.js`).
+- **Safe for multiple replicas**: `webhookRetryWorker` claims due retries via `deliveryRepository.popDueRetries`, which uses a single atomic Redis Lua script (`ZRANGEBYSCORE` + `ZREM` in one round trip) rather than two separate calls. Running N instances of this backend against the same Redis is safe - each due retry is claimed by exactly one instance, so a delivery is never dispatched twice for the same retry. The worker's in-process `running` flag only guards against a single process overlapping with itself; cross-replica safety comes from the atomic claim, not from that flag.
 
 ### Storage model
 
