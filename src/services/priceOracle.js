@@ -4,10 +4,27 @@ const coingecko = require('./sources/coingecko');
 const coinmarketcap = require('./sources/coinmarketcap');
 const config = require('../config');
 const logger = require('../logger');
+const { CircuitBreaker } = require('../utils/circuitBreaker');
 
 const CACHE_PREFIX = 'price:';
 const HISTORY_PREFIX = 'price:history:';
+const breakerOptions = config.price.circuitBreaker;
 const SOURCES = [
+  {
+    name: 'stellar_dex',
+    fetch: stellarDex.fetchPrice,
+    breaker: new CircuitBreaker('stellar_dex', breakerOptions),
+  },
+  {
+    name: 'coingecko',
+    fetch: coingecko.fetchPrice,
+    breaker: new CircuitBreaker('coingecko', breakerOptions),
+  },
+  {
+    name: 'coinmarketcap',
+    fetch: coinmarketcap.fetchPrice,
+    breaker: new CircuitBreaker('coinmarketcap', breakerOptions),
+  },
   { name: 'stellar_dex', fetch: stellarDex.fetchPrice },
   { name: 'coingecko', fetch: coingecko.fetchPrice, getCircuitState: coingecko.getCircuitState },
   { name: 'coinmarketcap', fetch: coinmarketcap.fetchPrice, getCircuitState: coinmarketcap.getCircuitState },
@@ -91,7 +108,7 @@ async function fetchFromAllSources(assetCode, issuer) {
 
   for (const source of SOURCES) {
     try {
-      const price = await source.fetch(assetCode, issuer);
+      const price = await source.breaker.call(() => source.fetch(assetCode, issuer));
       if (price !== null && price > 0) {
         results.push({ source: source.name, price });
       }
@@ -101,6 +118,19 @@ async function fetchFromAllSources(assetCode, issuer) {
   }
 
   return results;
+}
+
+function getCircuitStates() {
+  return SOURCES.reduce((states, source) => {
+    states[source.name] = source.breaker.getState();
+    return states;
+  }, {});
+}
+
+function resetCircuitBreakers() {
+  for (const source of SOURCES) {
+    source.breaker.reset();
+  }
 }
 
 async function getPrice(assetCode, issuer = null) {
@@ -247,6 +277,8 @@ async function refreshAllCachedPrices() {
 module.exports = {
   getPrice,
   fetchFreshPrice,
+  getCircuitStates,
+  resetCircuitBreakers,
   refreshAllCachedPrices,
   // Internal helpers exported for unit testing.
   median,

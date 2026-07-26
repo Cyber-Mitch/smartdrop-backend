@@ -59,6 +59,9 @@ app.get('/health', (req, res) => {
   res.json({
     status,
     timestamp: new Date().toISOString(),
+    redis_connected: redisConnected,
+    redis_unavailable: !redisConnected,
+    circuits: priceOracle.getCircuitStates(),
     redis: {
       connected: redisConnected,
     },
