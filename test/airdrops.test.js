@@ -2,6 +2,7 @@
 
 const mockStore = new Map();
 const mockSets = new Map();
+const mockSortedSets = new Map();
 const mockZSets = new Map();
 const mockLists = new Map();
 const mockCounters = new Map();
@@ -16,6 +17,20 @@ const mockRedis = {
     mockSets.get(key)?.delete(val);
   }),
   zadd: jest.fn(async (key, score, member) => {
+    if (!mockSortedSets.has(key)) mockSortedSets.set(key, new Map());
+    mockSortedSets.get(key).set(member, score);
+  }),
+  zrem: jest.fn(async (key, member) => {
+    mockSortedSets.get(key)?.delete(member);
+  }),
+  zcard: jest.fn(async (key) => mockSortedSets.get(key)?.size || 0),
+  zrevrange: jest.fn(async (key, start, stop) => {
+    const sortedSet = mockSortedSets.get(key);
+    if (!sortedSet) return [];
+    const entries = Array.from(sortedSet.entries()).sort((a, b) => b[1] - a[1]);
+    const startIdx = start === -1 ? entries.length + start : start;
+    const stopIdx = stop === -1 ? entries.length + stop : stop;
+    return entries.slice(startIdx, stopIdx + 1).map(([member]) => member);
     if (!mockZSets.has(key)) mockZSets.set(key, new Map());
     mockZSets.get(key).set(member, Number(score));
   }),
@@ -53,7 +68,9 @@ const mockRedis = {
   }),
   lrange: jest.fn(async (key, start, end) => {
     const list = mockLists.get(key) || [];
-    return list.slice(start, end + 1);
+    const startIdx = start === -1 ? list.length + start : start;
+    const endIdx = end === -1 ? list.length + end : end;
+    return list.slice(startIdx, endIdx + 1);
   }),
   incr: jest.fn(async (key) => {
     const count = (mockCounters.get(key) || 0) + 1;
@@ -109,12 +126,14 @@ const config = require('../src/config');
 let app;
 
 beforeAll(() => {
-  app = require('../src/index');
+  const { app: importedApp } = require('../src/index');
+  app = importedApp;
 });
 
 beforeEach(() => {
   mockStore.clear();
   mockSets.clear();
+  mockSortedSets.clear();
   mockZSets.clear();
   mockLists.clear();
   mockCounters.clear();
@@ -126,6 +145,8 @@ beforeEach(() => {
   mockRedis.srem.mockClear();
   mockRedis.zadd.mockClear();
   mockRedis.zrem.mockClear();
+  mockRedis.zcard.mockClear();
+  mockRedis.zrevrange.mockClear();
   mockRedis.zrevrange.mockClear();
   mockRedis.zcard.mockClear();
   mockRedis.zscan.mockClear();
@@ -150,7 +171,7 @@ describe('POST /api/v1/airdrops', () => {
         asset: 'USDC',
         asset_issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335AX2OBFLDTQLNUEHRGPTM6RIA',
         total_amount: 100,
-        expiry_ledger: 123456,
+        expiry_ledger: 123456, // Greater than mockLedger.sequence (12345)
         recipients: [
           { address: validAddress1, amount: 50 },
           { address: validAddress2, amount: 50 },
@@ -204,6 +225,7 @@ describe('POST /api/v1/airdrops', () => {
 
 describe('GET /api/v1/airdrops', () => {
   test('lists airdrops with pagination', async () => {
+    const res1 = await request(app)
     await request(app)
       .post('/api/v1/airdrops')
       .send({
@@ -214,6 +236,7 @@ describe('GET /api/v1/airdrops', () => {
         expiry_ledger: 123456,
       });
 
+    const res2 = await request(app)
     await request(app)
       .post('/api/v1/airdrops')
       .send({

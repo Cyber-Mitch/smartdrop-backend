@@ -25,7 +25,11 @@ const apiDocsRouter = require('./routes/apiDocs');
 const priceWebSocket = require('./ws/priceWebSocket');
 
 const app = express();
-let server;
+let server = {
+  close(callback) {
+    if (callback) callback();
+  },
+};
 
 app.use(requestIdMiddleware);
 app.use(helmet());
@@ -142,6 +146,7 @@ async function startServer() {
   return server;
 }
 
+module.exports = { app, server };
 module.exports = app;
 module.exports.app = app;
 module.exports.server = server || {
