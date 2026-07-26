@@ -111,6 +111,7 @@ module.exports = {
   redis: {
     url: env.REDIS_URL,
   },
+  databaseUrl: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/smartdrop',
   stellar: {
     horizonUrl: process.env.STELLAR_HORIZON_URL || 'https://horizon.stellar.org',
     sorobanRpcUrl: process.env.SOROBAN_RPC_URL || 'https://soroban-rpc.mainnet.stellar.gateway.fm',
