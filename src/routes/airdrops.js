@@ -7,6 +7,30 @@ const config = require('../config');
 const airdropsService = require('../services/airdrops');
 const logger = require('../logger');
 const AppError = require('../errors/AppError');
+const { flattenZodIssues, validate } = require('../middleware/validate');
+const {
+  airdropCreateBodySchema,
+  airdropRecipientsBodySchema,
+  airdropUpdateBodySchema,
+  paginationQuerySchema,
+  recipientsSchema,
+  routeIdParamsSchema,
+} = require('../validation/schemas');
+
+const router = express.Router();
+const upload = multer();
+const validateRouteIdParams = validate(routeIdParamsSchema, 'params');
+const validatePaginationQuery = validate(paginationQuerySchema, 'query');
+const validateRecipientBody = validate(airdropRecipientsBodySchema);
+
+function validateWithCurrentLedger(schemaFactory) {
+  return async (req, res, next) => {
+    try {
+      const currentLedger = await airdropsService.getCurrentLedger();
+      return validate(schemaFactory(currentLedger))(req, res, next);
+    } catch (err) {
+      logger.error('Airdrop validation error', { error: err.message });
+      return next(err);
 const buildRateLimit = require('../middleware/rateLimit');
 const { StrKey } = require('stellar-sdk');
 
@@ -83,26 +107,17 @@ function validateAirdropCreate(body, currentLedger) {
     if (recipientSet.has(r.address)) {
       return `recipient ${i}: duplicate address ${r.address}`;
     }
-    recipientSet.add(r.address);
-    if (typeof r.amount !== 'number' || r.amount <= 0) {
-      return `recipient ${i}: amount must be a positive number`;
-    }
-    sum += r.amount;
-  }
-
-  if (recipients.length > 0 && sum !== total_amount) {
-    return `sum of recipient amounts (${sum}) must equal total_amount (${total_amount})`;
-  }
-
-  return null;
+  };
 }
 
-function validateAirdropUpdate(body, currentLedger) {
-  const { expiry_ledger } = body;
-  if (expiry_ledger !== undefined && (typeof expiry_ledger !== 'number' || expiry_ledger <= currentLedger)) {
-    return `expiry_ledger must be greater than current ledger (${currentLedger})`;
+function parseRecipients(recipients, next) {
+  const result = recipientsSchema.safeParse(recipients);
+  if (!result.success) {
+    return next(new AppError('VALIDATION_ERROR', 'Validation failed', 400, {
+      fields: flattenZodIssues(result.error),
+    }));
   }
-  return null;
+  return result.data;
 }
 
 async function parseCSV(buffer) {
@@ -132,15 +147,10 @@ async function parseCSV(buffer) {
   return results;
 }
 
+router.post('/airdrops', validateWithCurrentLedger(airdropCreateBodySchema), async (req, res, next) => {
 router.post('/airdrops', createAirdropLimit, async (req, res, next) => {
   try {
-    const currentLedger = await airdropsService.getCurrentLedger();
-    const validationError = validateAirdropCreate(req.body, currentLedger);
-    if (validationError) {
-      return next(new AppError('VALIDATION_ERROR', validationError, 400));
-    }
-
-    const airdrop = await airdropsService.create(req.body);
+    const airdrop = await airdropsService.create(req.validated.body);
     return res.status(201).json(airdrop);
   } catch (err) {
     logger.error('Create airdrop error', { error: err.message });
@@ -148,10 +158,9 @@ router.post('/airdrops', createAirdropLimit, async (req, res, next) => {
   }
 });
 
-router.get('/airdrops', async (req, res, next) => {
+router.get('/airdrops', validatePaginationQuery, async (req, res, next) => {
   try {
-    const page = parseInt(req.query.page, 10) || 1;
-    const limit = parseInt(req.query.limit, 10) || 20;
+    const { page, limit } = req.validated.query;
     const result = await airdropsService.list(page, limit);
     return res.json(result);
   } catch (err) {
@@ -160,7 +169,7 @@ router.get('/airdrops', async (req, res, next) => {
   }
 });
 
-router.get('/airdrops/:id', async (req, res, next) => {
+router.get('/airdrops/:id', validateRouteIdParams, async (req, res, next) => {
   try {
     const airdrop = await airdropsService.get(req.params.id);
     if (!airdrop) {
@@ -173,15 +182,9 @@ router.get('/airdrops/:id', async (req, res, next) => {
   }
 });
 
-router.patch('/airdrops/:id', async (req, res, next) => {
+router.patch('/airdrops/:id', validateRouteIdParams, validateWithCurrentLedger(airdropUpdateBodySchema), async (req, res, next) => {
   try {
-    const currentLedger = await airdropsService.getCurrentLedger();
-    const validationError = validateAirdropUpdate(req.body, currentLedger);
-    if (validationError) {
-      return next(new AppError('VALIDATION_ERROR', validationError, 400));
-    }
-
-    const airdrop = await airdropsService.update(req.params.id, req.body);
+    const airdrop = await airdropsService.update(req.params.id, req.validated.body);
     if (!airdrop) {
       return next(new AppError('NOT_FOUND', 'Airdrop not found', 404));
     }
@@ -192,7 +195,7 @@ router.patch('/airdrops/:id', async (req, res, next) => {
   }
 });
 
-router.delete('/airdrops/:id', async (req, res, next) => {
+router.delete('/airdrops/:id', validateRouteIdParams, async (req, res, next) => {
   try {
     const deleted = await airdropsService.remove(req.params.id);
     if (!deleted) {
@@ -205,7 +208,7 @@ router.delete('/airdrops/:id', async (req, res, next) => {
   }
 });
 
-router.post('/airdrops/:id/cancel', async (req, res, next) => {
+router.post('/airdrops/:id/cancel', validateRouteIdParams, async (req, res, next) => {
   try {
     const airdrop = await airdropsService.cancel(req.params.id);
     if (!airdrop) {
@@ -218,6 +221,7 @@ router.post('/airdrops/:id/cancel', async (req, res, next) => {
   }
 });
 
+router.post('/airdrops/:id/recipients', validateRouteIdParams, upload.single('file'), validateRecipientBody, async (req, res, next) => {
 router.post('/airdrops/:id/recipients', addRecipientsLimit, uploadRecipientsFile, async (req, res, next) => {
   try {
     const airdrop = await airdropsService.get(req.params.id);
@@ -228,8 +232,10 @@ router.post('/airdrops/:id/recipients', addRecipientsLimit, uploadRecipientsFile
     let recipients = [];
     if (req.file) {
       recipients = await parseCSV(req.file.buffer);
-    } else if (req.body.recipients) {
-      recipients = Array.isArray(req.body.recipients) ? req.body.recipients : JSON.parse(req.body.recipients);
+      recipients = parseRecipients(recipients, next);
+      if (!recipients) return undefined;
+    } else if (req.validated.body.recipients) {
+      recipients = req.validated.body.recipients;
     } else {
       return next(new AppError('VALIDATION_ERROR', 'recipients or file is required', 400));
     }
@@ -263,15 +269,14 @@ router.post('/airdrops/:id/recipients', addRecipientsLimit, uploadRecipientsFile
   }
 });
 
-router.get('/airdrops/:id/recipients', async (req, res, next) => {
+router.get('/airdrops/:id/recipients', validateRouteIdParams, validatePaginationQuery, async (req, res, next) => {
   try {
     const airdrop = await airdropsService.get(req.params.id);
     if (!airdrop) {
       return next(new AppError('NOT_FOUND', 'Airdrop not found', 404));
     }
 
-    const page = parseInt(req.query.page, 10) || 1;
-    const limit = parseInt(req.query.limit, 10) || 20;
+    const { page, limit } = req.validated.query;
     const result = await airdropsService.listRecipients(req.params.id, page, limit);
     return res.json(result);
   } catch (err) {
