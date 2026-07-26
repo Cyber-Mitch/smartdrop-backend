@@ -1,0 +1,11 @@
+node_modules
+npm-debug.log
+coverage
+.git
+.github
+test
+README.md
+.env
+.env.local
+docker-compose.override.yml
+.dockerignore
