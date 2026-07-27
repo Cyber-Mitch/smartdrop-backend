@@ -9,6 +9,8 @@ const priceOracle = require('./services/priceOracle');
 const priceRefreshJob = require('./jobs/priceRefresh');
 const webhookRetryWorker = require('./jobs/webhookRetryWorker');
 const airdropExpiryJob = require('./jobs/airdropExpiry');
+const { createLeaderElection } = require('./services/leaderElection');
+const { makeLeaderAwareJob } = require('./jobs/leaderAwareJob');
 const { warmCache } = require('./startup/cacheWarm');
 const buildCorsMiddleware = require('./middleware/cors');
 const buildRateLimit = require('./middleware/rateLimit');
@@ -26,6 +28,34 @@ const apiDocsRouter = require('./routes/apiDocs');
 
 const priceWebSocket = require('./ws/priceWebSocket');
 
+// Wrap background jobs with leader-election coordination so that only one
+// replica across the deployment runs each job at any given time.
+// See README.md#leader-election for design, failover timing, and configuration.
+const leaderElectionPriceRefresh = createLeaderElection('price_refresh');
+const leaderElectionWebhookRetry = createLeaderElection('webhook_retry');
+const leaderElectionAirdropExpiry = createLeaderElection('airdrop_expiry');
+
+const wrappedPriceRefreshJob = makeLeaderAwareJob({
+  job: priceRefreshJob,
+  jobName: 'price_refresh',
+  leaderElection: leaderElectionPriceRefresh,
+  logger,
+});
+
+const wrappedWebhookRetryWorker = makeLeaderAwareJob({
+  job: webhookRetryWorker,
+  jobName: 'webhook_retry',
+  leaderElection: leaderElectionWebhookRetry,
+  logger,
+});
+
+const wrappedAirdropExpiryJob = makeLeaderAwareJob({
+  job: airdropExpiryJob,
+  jobName: 'airdrop_expiry',
+  leaderElection: leaderElectionAirdropExpiry,
+  logger,
+});
+
 const app = express();
 let server = {
   close(callback) {
@@ -40,16 +70,21 @@ app.use(express.json({ limit: config.airdrops.jsonMaxBytes }));
 
 app.get('/health', (req, res) => {
   const redisConnected = cache.isConnected();
-  const priceRefreshHealth = priceRefreshJob.getHealth();
-  const webhookWorkerHealth = webhookRetryWorker.getHealth();
+  const priceRefreshHealth = wrappedPriceRefreshJob.getHealth();
+  const webhookWorkerHealth = wrappedWebhookRetryWorker.getHealth();
+  const airdropExpiryHealth = wrappedAirdropExpiryJob.getHealth();
 
   // Compute overall status:
   //   unhealthy – Redis is down, or a job is stalled past its grace period
   //   degraded  – a job has not yet run but is still within its startup grace period
   //   ok        – all dependencies healthy
+  //
+  // Note: a non-leader instance reports its jobs as not healthy (since they
+  // aren't running locally), but that's expected — the leader is doing the
+  // work. The health check distinguishes "not leader" from "stalled" via the
+  // `leader` field.
   let status = 'ok';
   if (!redisConnected || !priceRefreshHealth.healthy || !webhookWorkerHealth.healthy) {
-    // Distinguish between "never started" (degraded) vs outright stalled/down (unhealthy)
     const jobsDegraded =
       (!priceRefreshHealth.healthy && !priceRefreshHealth.stalled) ||
       (!webhookWorkerHealth.healthy && !webhookWorkerHealth.stalled);
@@ -75,6 +110,9 @@ app.get('/health', (req, res) => {
           : null,
         last_error: priceRefreshHealth.lastError,
         stalled: priceRefreshHealth.stalled,
+        leader: priceRefreshHealth.leader,
+        leader_instance_id: priceRefreshHealth.leaderInstanceId,
+        leader_since: priceRefreshHealth.leaderSince,
       },
       webhook_retry_worker: {
         healthy: webhookWorkerHealth.healthy,
@@ -83,6 +121,20 @@ app.get('/health', (req, res) => {
           : null,
         last_error: webhookWorkerHealth.lastError,
         stalled: webhookWorkerHealth.stalled,
+        leader: webhookWorkerHealth.leader,
+        leader_instance_id: webhookWorkerHealth.leaderInstanceId,
+        leader_since: webhookWorkerHealth.leaderSince,
+      },
+      airdrop_expiry: {
+        healthy: airdropExpiryHealth.healthy,
+        last_success_at: airdropExpiryHealth.lastSuccessAt
+          ? new Date(airdropExpiryHealth.lastSuccessAt).toISOString()
+          : null,
+        last_error: airdropExpiryHealth.lastError,
+        stalled: airdropExpiryHealth.stalled,
+        leader: airdropExpiryHealth.leader,
+        leader_instance_id: airdropExpiryHealth.leaderInstanceId,
+        leader_since: airdropExpiryHealth.leaderSince,
       },
     },
     database: {
@@ -91,6 +143,11 @@ app.get('/health', (req, res) => {
       status: 'unused',
     },
     price_source_circuits: priceOracle.getSourceCircuitStates(),
+    leader_election: {
+      instance_id: config.leaderElection.instanceId,
+      lease_ttl_ms: config.leaderElection.leaseTtlMs,
+      renew_interval_ms: config.leaderElection.renewIntervalMs,
+    },
   });
 });
 
@@ -114,47 +171,46 @@ app.use('/api-docs', apiDocsRouter);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-const server = app.listen(config.port, () => {
-  logger.info(`SmartDrop backend running on port ${config.port}`);
-  priceRefreshJob.start();
-  indexerPoller.start();
-});
-
-let server;
-
-if (require.main === module) {
-  server = app.listen(config.port, () => {
-    logger.info(`SmartDrop backend running on port ${config.port}`);
-    priceRefreshJob.start();
-  });
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received, shutting down');
-  priceRefreshJob.stop();
-  indexerPoller.stop();
-  server.close();
-  await cache.disconnect();
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  logger.info('SIGINT received, shutting down');
-  priceRefreshJob.stop();
-  indexerPoller.stop();
-  server.close();
-  await cache.disconnect();
-  process.exit(0);
-});
 function shutdown(signal) {
   return async () => {
     logger.info(`${signal} received, shutting down`);
-    priceRefreshJob.stop();
-    webhookRetryWorker.stop();
-    airdropExpiryJob.stop();
+
+    // Stop leader-aware jobs (releases leases gracefully)
+    await wrappedPriceRefreshJob.stop();
+    await wrappedWebhookRetryWorker.stop();
+    await wrappedAirdropExpiryJob.stop();
+
+    // Stop non-leader-elected services
+    indexerPoller.stop();
     require('./ws/PriceSubscriptionManager').stopHeartbeat();
+
     if (server) server.close();
     await cache.disconnect();
     process.exit(0);
   };
+}
+
+async function startServer() {
+  await warmCache(config.watchedAssets);
+
+  server = app.listen(config.port, () => {
+    logger.info(`SmartDrop backend running on port ${config.port}`);
+    priceWebSocket.attach(server);
+
+    // Start leader-aware background jobs.
+    // Each wrapped job starts a leader-election renewal loop. The underlying
+    // job (cron / setInterval) is only activated when this instance holds
+    // the leader lease. Non-leader instances remain ready to take over.
+    wrappedPriceRefreshJob.start();
+    wrappedWebhookRetryWorker.start();
+    wrappedAirdropExpiryJob.start();
+
+    // Indexer poller is not leader-elected (it uses its own cursor-based
+    // persistence in Redis and is safe for multiple replicas to run).
+    indexerPoller.start();
+  });
+
+  return server;
 }
 
 if (require.main === module) {
@@ -167,27 +223,16 @@ if (require.main === module) {
   process.on('SIGINT', shutdown('SIGINT'));
 }
 
-async function startServer() {
-  await warmCache(config.watchedAssets);
-
-  server = app.listen(config.port, () => {
-    logger.info(`SmartDrop backend running on port ${config.port}`);
-    priceWebSocket.attach(server);
-    priceRefreshJob.start();
-    webhookRetryWorker.start();
-    airdropExpiryJob.start();
-  });
-  module.exports.server = server;
-
-  return server;
-}
-
-module.exports = { app, server };
-module.exports = app;
-module.exports.app = app;
-module.exports.server = server || {
-  close(callback) {
-    if (callback) callback();
+module.exports = {
+  app,
+  server: server || {
+    close(callback) {
+      if (callback) callback();
+    },
   },
+  startServer,
+  // Exposed for testing
+  wrappedPriceRefreshJob,
+  wrappedWebhookRetryWorker,
+  wrappedAirdropExpiryJob,
 };
-module.exports.startServer = startServer;
