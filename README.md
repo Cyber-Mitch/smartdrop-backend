@@ -89,6 +89,75 @@ periodically re-checks that condition against the live network:
   that cycle rather than crashing — airdrops are simply re-checked on the
   next tick.
 
+### Leader Election
+
+Background jobs (price refresh, webhook retry worker, airdrop expiry) use
+**Redis-based leader election** to ensure that across any number of horizontally-
+scaled replicas, only one instance actively runs each job at any given time.
+
+**Mechanism:**
+
+Each job type has its own Redis lock key (e.g. `leader:price_refresh`,
+`leader:webhook_retry`, `leader:airdrop_expiry`). On startup, every replica
+attempts to acquire the lock via `SET key value NX PX <ttl_ms>`. The instance
+that succeeds becomes the **leader** and runs the actual scheduled work. All
+other replicas are **followers** — they stay ready to take over, running only a
+periodic renewal check loop.
+
+The current leader periodically renews the lease using an atomic Lua script
+(`GET` + `PEXPIRE` in one round trip, keyed to only succeed if the stored value
+still matches the leader's instance ID). If the leader process dies or becomes
+unresponsive, the lease expires automatically after the TTL, and a follower
+detects the expiry on its next renewal check and acquires leadership.
+
+**Failover timing:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `LEASE_TTL_MS` | 15000 (15s) | How long a lease is valid without renewal |
+| `LEASE_RENEW_INTERVAL_MS` | 5000 (5s) | How often the leader renews (and followers attempt to acquire) |
+
+- **Best-case failover** (leader stops gracefully): lease is released immediately
+  via the Lua-based conditional `DEL`; a follower acquires within one renewal
+  check interval (~5s).
+- **Worst-case failover** (leader crashes without cleanup): lease expires after
+  `LEASE_TTL_MS` (15s); the next follower renewal check detects it and acquires
+  (up to `LEASE_TTL_MS + LEASE_RENEW_INTERVAL_MS` ≈ 20s total).
+
+**Verifying leadership:**
+
+Check the `GET /health` endpoint. Each job entry includes a `leader` field
+(`true`/`false`) and `leader_instance_id` identifying which replica holds the
+lock. The top-level `leader_election` object shows the local instance's identity
+and lease configuration.
+
+```bash
+curl http://localhost:4000/health | jq '.jobs.price_refresh.leader'
+```
+
+To see which replica holds the lock from Redis directly:
+
+```bash
+redis-cli GET leader:price_refresh
+redis-cli GET leader:webhook_retry
+redis-cli GET leader:airdrop_expiry
+```
+
+**Graceful shutdown:**
+
+When a leader receives `SIGTERM`/`SIGINT`, the shutdown sequence releases the
+lease via the atomic conditional-DEL Lua script before closing the Redis
+connection, minimizing the failover window for followers.
+
+**Important caveat:**
+
+Leader election ensures only one instance runs the scheduled job logic, but it
+does not replace the need for atomic Redis operations within individual job ticks.
+For example, `deliveryRepository.popDueRetries` uses its own Lua-based atomic
+claim to prevent double-processing during any brief overlap during leadership
+handoffs. This is a separate concern that leader election complements but does
+not solve on its own.
+
 ---
 
 ## 🚀 Quick Start (Docker Development)
@@ -187,6 +256,9 @@ The application reads configurations from the `.env` file at the root.
 | `AIRDROP_JSON_MAX_BYTES` | Maximum JSON request body size; 2 MiB accommodates 10,000 inline recipients | 2097152 (2 MiB) | No |
 | `AIRDROP_RATELIMIT_WINDOW` | Per-IP airdrop mutation rate-limit window in seconds | 60 | No |
 | `AIRDROP_RATELIMIT_MAX` | Maximum create or recipient-add requests per window and IP | 10 | No |
+| `INSTANCE_ID` | Explicit instance identity for leader election; auto-generated from hostname+UUID if empty | auto | No |
+| `LEASE_TTL_MS` | Leader lease TTL in milliseconds — how long a lease is valid without renewal | 15000 | No |
+| `LEASE_RENEW_INTERVAL_MS` | How often the leader renews its lease (and followers check to acquire) | 5000 | No |
 | `LOG_LEVEL` | Logging level: `debug`, `info`, `warn`, or `error` | info | No |
 
 

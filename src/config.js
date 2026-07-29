@@ -75,6 +75,9 @@ const env = cleanEnv(rawEnv, {
   }),
   COINGECKO_API_KEY: str({ default: '' }),
   COINMARKETCAP_API_KEY: str({ default: '' }),
+  INSTANCE_ID: str({ default: '' }),
+  LEASE_TTL_MS: positiveInteger({ default: 15000 }),
+  LEASE_RENEW_INTERVAL_MS: positiveInteger({ default: 5000 }),
   ADMIN_API_KEY: str({ default: '' }),
   AIRDROP_CSV_MAX_BYTES: positiveInteger({ default: 5 * 1024 * 1024 }),
   AIRDROP_JSON_MAX_BYTES: positiveInteger({ default: 2 * 1024 * 1024 }),
@@ -179,6 +182,11 @@ module.exports = {
     },
   },
   watchedAssets: parsedWatchedAssets,
+  leaderElection: {
+    instanceId: env.INSTANCE_ID || `${require('os').hostname()}-${require('crypto').randomUUID().slice(0, 8)}`,
+    leaseTtlMs: env.LEASE_TTL_MS,
+    renewIntervalMs: env.LEASE_RENEW_INTERVAL_MS,
+  },
   auth: {
     adminApiKey: env.ADMIN_API_KEY,
   },
