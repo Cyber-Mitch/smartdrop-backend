@@ -190,6 +190,98 @@ describe('exponential backoff', () => {
   });
 });
 
+describe('backoff jitter (#128)', () => {
+  test('repeated calls with the same attemptsCompleted produce a distribution, not an identical value', () => {
+    // Simulates 100 deliveries all failing on attempt 1 "at once" — before
+    // jitter, every one of these computed exactly the same delay.
+    const delays = new Set();
+    for (let i = 0; i < 100; i++) {
+      delays.add(dispatcher.backoffMs(1));
+    }
+    expect(delays.size).toBeGreaterThan(1);
+  });
+
+  test('an injected random source of 0 produces exactly the lower bound (deterministic / 2)', () => {
+    // config defaults: base=30000, factor=2 -> attempt 1 deterministic=30000
+    const delay = dispatcher.backoffMs(1, { random: () => 0 });
+    expect(delay).toBe(15000);
+  });
+
+  test('an injected random source just under 1 stays just under the deterministic upper bound', () => {
+    const delay = dispatcher.backoffMs(1, { random: () => 0.999999 });
+    expect(delay).toBeLessThan(30000);
+    expect(delay).toBeGreaterThan(29999);
+  });
+
+  test('delay is never zero or negative, even at the minimum jitter, across several attempt counts', () => {
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const delay = dispatcher.backoffMs(attempt, { random: () => 0 });
+      expect(delay).toBeGreaterThan(0);
+    }
+  });
+
+  test('delay never reaches or exceeds the undjittered deterministic value, across several attempt counts', () => {
+    const base = 30000;
+    const factor = 2;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const deterministic = base * factor ** (attempt - 1);
+      const delay = dispatcher.backoffMs(attempt, { random: () => 0.999999 });
+      expect(delay).toBeLessThan(deterministic);
+    }
+  });
+
+  test('delay still strictly grows across attempts even in the worst-case jitter ordering', () => {
+    // Worst case for monotonicity: attempt N rolls the minimum possible
+    // jitter (random=0) while attempt N-1 rolls the maximum (random~1).
+    // Even then, attempt N's delay must exceed attempt N-1's, because the
+    // default 2x factor means each attempt's [half, full) range never
+    // overlaps the previous attempt's range.
+    const attempt1Max = dispatcher.backoffMs(1, { random: () => 0.999999 });
+    const attempt2Min = dispatcher.backoffMs(2, { random: () => 0 });
+    expect(attempt2Min).toBeGreaterThan(attempt1Max);
+
+    const attempt2Max = dispatcher.backoffMs(2, { random: () => 0.999999 });
+    const attempt3Min = dispatcher.backoffMs(3, { random: () => 0 });
+    expect(attempt3Min).toBeGreaterThan(attempt2Max);
+  });
+
+  test('defaults to the real Math.random when no random source is injected', () => {
+    const spy = jest.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const delay = dispatcher.backoffMs(1);
+      expect(spy).toHaveBeenCalled();
+      expect(delay).toBe(15000 + 0.5 * 15000);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe('thundering-herd prevention across a real dispatch tick (#128)', () => {
+  test('many deliveries failing at the same attempt within one tick get spread next_retry_at values', async () => {
+    // 20 different subscribers, all failing on attempt 1 at the same
+    // wall-clock moment (one dispatch() call, one Promise.all batch) —
+    // exactly the scenario the issue describes: a correlated outage
+    // affecting many in-flight deliveries at once.
+    const webhookCount = 20;
+    for (let i = 0; i < webhookCount; i++) {
+      await createWebhook({ url: `https://sub-${i}.example.com` });
+    }
+    mockAxiosPost.mockResolvedValue({ status: 503 });
+
+    const deliveries = await dispatcher.dispatch({
+      event_type: 'pool.assets_locked',
+      event_id: 'evt_herd',
+    });
+
+    expect(deliveries).toHaveLength(webhookCount);
+    deliveries.forEach((d) => expect(d.status).toBe('pending'));
+
+    const nextRetryAtValues = new Set(deliveries.map((d) => d.next_retry_at));
+    expect(nextRetryAtValues.size).toBeGreaterThan(1);
+  });
+});
+
 describe('shouldRetry decision table', () => {
   test('retries on network error', () => expect(dispatcher.shouldRetry(null, true)).toBe(true));
   test('retries on 500', () => expect(dispatcher.shouldRetry(500, false)).toBe(true));

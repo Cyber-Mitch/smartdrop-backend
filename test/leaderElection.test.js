@@ -10,12 +10,15 @@
  * run without a real Redis instance.
  */
 
-const { createCacheMock } = require('./helpers/cacheMock');
+const { createCacheMock: mockCreateCacheMock } = require('./helpers/cacheMock');
 const { createLeaderElection } = require('../src/services/leaderElection');
 
-// We need to override the cache module before requiring leaderElection
+// We need to override the cache module before requiring leaderElection.
+// The factory below may only reference identifiers Jest's mock-hoisting
+// considers safe (globals, or names prefixed with "mock") — hence the
+// renamed import above instead of the plain `createCacheMock`.
 jest.mock('../src/services/cache', () => {
-  const mock = createCacheMock();
+  const mock = mockCreateCacheMock();
   // Store reference for test access
   global.__cacheMock__ = mock;
   return mock.cacheMock;
@@ -144,9 +147,10 @@ describe('Leader Election', () => {
       await leaderElection.tryAcquire();
       expect(leaderElection.isLeader()).toBe(true);
 
-      // Simulate someone else taking the lock (direct Redis manipulation)
-      const redis2 = cacheMock.getClient();
-      await redis2.set('leader:test_job', 'test-instance-002', 'PX', 500);
+      // Simulate someone else taking the lock (direct Redis manipulation).
+      // Same shared in-memory client as `redis` above — there's only one
+      // Redis (real or mocked) for every instance to contend over.
+      await redis.set('leader:test_job', 'test-instance-002', 'PX', 500);
 
       const result = await leaderElection.renew();
       expect(result).toBe(false);

@@ -9,6 +9,10 @@ function createCacheMock() {
   const sets = new Map();
   const zsets = new Map();
   const counters = new Map();
+  // Separate raw string store (with per-key TTL) backing redis.set/get/del —
+  // distinct from `store` above, which backs the higher-level cacheMock.
+  // get/set JSON API with different key/value semantics.
+  const rawStore = new Map();
 
   function getSet(key) {
     if (!sets.has(key)) sets.set(key, new Set());
@@ -17,6 +21,14 @@ function createCacheMock() {
   function getZSet(key) {
     if (!zsets.has(key)) zsets.set(key, new Map());
     return zsets.get(key);
+  }
+  function isExpired(entry) {
+    return entry.expiresAt !== null && Date.now() >= entry.expiresAt;
+  }
+  function getLive(key) {
+    const entry = rawStore.get(key);
+    if (!entry || isExpired(entry)) return null;
+    return entry;
   }
 
   const redis = {
@@ -68,11 +80,39 @@ function createCacheMock() {
       return n;
     }),
     expire: jest.fn(async () => 1),
-    // Mimics ioredis#defineCommand for the one custom command this codebase
-    // registers (see deliveryRepository.js). Real Redis runs the Lua body
-    // single-threaded to completion, so this mock implementation reads and
-    // deletes without an intervening `await`, preserving that atomicity
-    // guarantee for tests.
+    // ioredis-style raw SET, supporting the NX/PX/EX option pairs used by
+    // leaderElection.js's lease acquisition (`SET key val NX PX ttlMs`).
+    // Returns 'OK' on success, null if NX and the key already holds a
+    // live (non-expired) value — matching real Redis's SET NX semantics.
+    set: jest.fn(async (key, value, ...args) => {
+      let nx = false;
+      let ttlMs = null;
+      for (let i = 0; i < args.length; i += 1) {
+        const arg = String(args[i]).toUpperCase();
+        if (arg === 'NX') nx = true;
+        else if (arg === 'PX') { ttlMs = Number(args[i + 1]); i += 1; }
+        else if (arg === 'EX') { ttlMs = Number(args[i + 1]) * 1000; i += 1; }
+      }
+      if (nx && getLive(key)) return null;
+      rawStore.set(key, { value: String(value), expiresAt: ttlMs !== null ? Date.now() + ttlMs : null });
+      return 'OK';
+    }),
+    get: jest.fn(async (key) => {
+      const entry = getLive(key);
+      return entry ? entry.value : null;
+    }),
+    del: jest.fn(async (key) => (rawStore.delete(key) ? 1 : 0)),
+    pexpire: jest.fn(async (key, ms) => {
+      const entry = getLive(key);
+      if (!entry) return 0;
+      entry.expiresAt = Date.now() + Number(ms);
+      return 1;
+    }),
+    // Mimics ioredis#defineCommand for the custom commands this codebase
+    // registers (see deliveryRepository.js and leaderElection.js). Real
+    // Redis runs the Lua body single-threaded to completion, so this mock
+    // implementation reads and mutates without an intervening `await`,
+    // preserving that atomicity guarantee for tests.
     defineCommand: jest.fn((name, { lua } = {}) => {
       if (name === 'popDueRetriesAtomic') {
         redis.popDueRetriesAtomic = jest.fn(async (queueKey, maxScore, limit) => {
@@ -85,6 +125,30 @@ function createCacheMock() {
             .map(([m]) => m);
           ids.forEach((id) => z.delete(id));
           return ids;
+        });
+        return;
+      }
+      if (name === 'renewLease') {
+        // Mirrors RENEW_LUA: renew only if we still hold the lease.
+        redis.renewLease = jest.fn(async (key, expectedValue, ttlMs) => {
+          const entry = getLive(key);
+          if (entry && entry.value === expectedValue) {
+            entry.expiresAt = Date.now() + Number(ttlMs);
+            return 1;
+          }
+          return 0;
+        });
+        return;
+      }
+      if (name === 'releaseLease') {
+        // Mirrors RELEASE_LUA: release only if we still hold the lease.
+        redis.releaseLease = jest.fn(async (key, expectedValue) => {
+          const entry = getLive(key);
+          if (entry && entry.value === expectedValue) {
+            rawStore.delete(key);
+            return 1;
+          }
+          return 0;
         });
         return;
       }
@@ -109,6 +173,7 @@ function createCacheMock() {
     sets.clear();
     zsets.clear();
     counters.clear();
+    rawStore.clear();
     Object.values(redis).forEach((fn) => fn.mockClear?.());
     cacheMock.get.mockClear();
     cacheMock.set.mockClear();

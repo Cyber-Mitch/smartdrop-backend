@@ -31,7 +31,13 @@ router.get('/airdrops/:id/status', async (req, res) => {
   }
 });
 
-router.get('/airdrops/:id/recipients', async (req, res) => {
+// Named distinctly from airdrops.js's own `/airdrops/:id/recipients` (the
+// stored/intended recipient list): this returns recipients derived from
+// indexed on-chain claim events, a different source of truth. The two
+// routers previously registered the exact same path, and since this
+// router is mounted first in src/index.js, it silently shadowed the real
+// listRecipients handler in airdrops.js on every request.
+router.get('/airdrops/:id/onchain-recipients', async (req, res) => {
   try {
     if (!isValidId(req.params.id)) {
       return res.status(400).json({ error: 'Invalid airdrop id' });

@@ -394,7 +394,7 @@ Returns the overall health of the service and its dependencies.
 
 ```
 GET /api/v1/airdrops/:id/status
-GET /api/v1/airdrops/:id/recipients
+GET /api/v1/airdrops/:id/onchain-recipients
 GET /api/v1/recipients/:address/claims
 GET /api/v1/indexer/status
 ```
@@ -540,7 +540,7 @@ Express tip: capture the raw body via `express.json({ verify: (req, _res, buf) =
 
 - Up to `WEBHOOK_MAX_ATTEMPTS` (default 3) total attempts per event.
 - Retries are scheduled in Redis and processed by a background worker, so retries survive process restarts.
-- Backoff is exponential: `base * factor^(attempts-1)` (default 30s → 60s → 120s).
+- Backoff is exponential with "equal jitter": `deterministic = base * factor^(attempts-1)`, then the actual delay is randomized within `[deterministic/2, deterministic)` (default deterministic values 30s → 60s → 120s, so e.g. attempt 1's actual delay lands somewhere in 15s–30s). This prevents deliveries that fail at the same attempt count around the same moment (e.g. every in-flight delivery to a subscriber whose endpoint just went down) from computing identical `nextRetryAt` values and arriving back at that endpoint in a synchronized burst.
 - **Retryable**: network errors, HTTP 5xx, 408, 429.
 - **Not retried**: HTTP 4xx (except 408/429). These are marked `failed` immediately so a misconfigured consumer cannot be retried into the ground.
 - Each delivery is logged in `webhook_deliveries` (Redis-backed today, drop-in PG migration documented in `src/repositories/deliveryRepository.js`).

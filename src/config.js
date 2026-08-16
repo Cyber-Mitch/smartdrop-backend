@@ -114,12 +114,9 @@ module.exports = {
   redis: {
     url: env.REDIS_URL,
   },
-  databaseUrl: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/smartdrop',
   stellar: {
-    horizonUrl: process.env.STELLAR_HORIZON_URL || 'https://horizon.stellar.org',
-    sorobanRpcUrl: process.env.SOROBAN_RPC_URL || 'https://soroban-rpc.mainnet.stellar.gateway.fm',
-    usdcIssuer: process.env.USDC_ISSUER || 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335AX2OBFLDTQLNUEHRGPTM6RIA',
     horizonUrl: env.STELLAR_HORIZON_URL,
+    sorobanRpcUrl: process.env.SOROBAN_RPC_URL || 'https://soroban-rpc.mainnet.stellar.gateway.fm',
     usdcIssuer,
   },
   indexer: {
@@ -207,6 +204,14 @@ module.exports = {
     retryBaseMs: parseInt(process.env.WEBHOOK_RETRY_BASE_MS, 10) || 30000,
     retryFactor: parseFloat(process.env.WEBHOOK_RETRY_FACTOR) || 2,
     timeoutMs: parseInt(process.env.WEBHOOK_TIMEOUT_MS, 10) || 5000,
+    // retryPollMs/retryBatchSize: #128 considered retuning these once
+    // backoffMs() gained jitter (a wider spread of nextRetryAt values could
+    // argue for a shorter poll interval and/or smaller batch, since due
+    // items are less likely to arrive in one dense cluster). Left
+    // unchanged here — jitter already substantially reduces the size of
+    // any one burst on its own, and retuning the poll/batch knobs is a
+    // separate operational tradeoff (worker load vs. retry latency) worth
+    // its own measurement rather than a guess made alongside this fix.
     retryPollMs: parseInt(process.env.WEBHOOK_RETRY_POLL_MS, 10) || 5000,
     retryBatchSize: parseInt(process.env.WEBHOOK_RETRY_BATCH, 10) || 25,
     rateLimit: {
