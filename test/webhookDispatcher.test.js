@@ -200,6 +200,12 @@ describe('backoff jitter (#128)', () => {
     }
     expect(delays.size).toBeGreaterThan(1);
   });
+
+  test('an injected random source of 0 produces exactly the lower bound (deterministic / 2)', () => {
+    // config defaults: base=30000, factor=2 -> attempt 1 deterministic=30000
+    const delay = dispatcher.backoffMs(1, { random: () => 0 });
+    expect(delay).toBe(15000);
+  });
 });
 
 describe('shouldRetry decision table', () => {
