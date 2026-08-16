@@ -229,6 +229,21 @@ describe('backoff jitter (#128)', () => {
       expect(delay).toBeLessThan(deterministic);
     }
   });
+
+  test('delay still strictly grows across attempts even in the worst-case jitter ordering', () => {
+    // Worst case for monotonicity: attempt N rolls the minimum possible
+    // jitter (random=0) while attempt N-1 rolls the maximum (random~1).
+    // Even then, attempt N's delay must exceed attempt N-1's, because the
+    // default 2x factor means each attempt's [half, full) range never
+    // overlaps the previous attempt's range.
+    const attempt1Max = dispatcher.backoffMs(1, { random: () => 0.999999 });
+    const attempt2Min = dispatcher.backoffMs(2, { random: () => 0 });
+    expect(attempt2Min).toBeGreaterThan(attempt1Max);
+
+    const attempt2Max = dispatcher.backoffMs(2, { random: () => 0.999999 });
+    const attempt3Min = dispatcher.backoffMs(3, { random: () => 0 });
+    expect(attempt3Min).toBeGreaterThan(attempt2Max);
+  });
 });
 
 describe('shouldRetry decision table', () => {
