@@ -212,6 +212,13 @@ describe('backoff jitter (#128)', () => {
     expect(delay).toBeLessThan(30000);
     expect(delay).toBeGreaterThan(29999);
   });
+
+  test('delay is never zero or negative, even at the minimum jitter, across several attempt counts', () => {
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const delay = dispatcher.backoffMs(attempt, { random: () => 0 });
+      expect(delay).toBeGreaterThan(0);
+    }
+  });
 });
 
 describe('shouldRetry decision table', () => {
