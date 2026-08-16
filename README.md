@@ -394,7 +394,7 @@ Returns the overall health of the service and its dependencies.
 
 ```
 GET /api/v1/airdrops/:id/status
-GET /api/v1/airdrops/:id/recipients
+GET /api/v1/airdrops/:id/onchain-recipients
 GET /api/v1/recipients/:address/claims
 GET /api/v1/indexer/status
 ```
