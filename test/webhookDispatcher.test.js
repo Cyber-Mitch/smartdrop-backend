@@ -219,6 +219,16 @@ describe('backoff jitter (#128)', () => {
       expect(delay).toBeGreaterThan(0);
     }
   });
+
+  test('delay never reaches or exceeds the undjittered deterministic value, across several attempt counts', () => {
+    const base = 30000;
+    const factor = 2;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const deterministic = base * factor ** (attempt - 1);
+      const delay = dispatcher.backoffMs(attempt, { random: () => 0.999999 });
+      expect(delay).toBeLessThan(deterministic);
+    }
+  });
 });
 
 describe('shouldRetry decision table', () => {
