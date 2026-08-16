@@ -257,6 +257,31 @@ describe('backoff jitter (#128)', () => {
   });
 });
 
+describe('thundering-herd prevention across a real dispatch tick (#128)', () => {
+  test('many deliveries failing at the same attempt within one tick get spread next_retry_at values', async () => {
+    // 20 different subscribers, all failing on attempt 1 at the same
+    // wall-clock moment (one dispatch() call, one Promise.all batch) —
+    // exactly the scenario the issue describes: a correlated outage
+    // affecting many in-flight deliveries at once.
+    const webhookCount = 20;
+    for (let i = 0; i < webhookCount; i++) {
+      await createWebhook({ url: `https://sub-${i}.example.com` });
+    }
+    mockAxiosPost.mockResolvedValue({ status: 503 });
+
+    const deliveries = await dispatcher.dispatch({
+      event_type: 'pool.assets_locked',
+      event_id: 'evt_herd',
+    });
+
+    expect(deliveries).toHaveLength(webhookCount);
+    deliveries.forEach((d) => expect(d.status).toBe('pending'));
+
+    const nextRetryAtValues = new Set(deliveries.map((d) => d.next_retry_at));
+    expect(nextRetryAtValues.size).toBeGreaterThan(1);
+  });
+});
+
 describe('shouldRetry decision table', () => {
   test('retries on network error', () => expect(dispatcher.shouldRetry(null, true)).toBe(true));
   test('retries on 500', () => expect(dispatcher.shouldRetry(500, false)).toBe(true));
