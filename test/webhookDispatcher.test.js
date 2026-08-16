@@ -206,6 +206,12 @@ describe('backoff jitter (#128)', () => {
     const delay = dispatcher.backoffMs(1, { random: () => 0 });
     expect(delay).toBe(15000);
   });
+
+  test('an injected random source just under 1 stays just under the deterministic upper bound', () => {
+    const delay = dispatcher.backoffMs(1, { random: () => 0.999999 });
+    expect(delay).toBeLessThan(30000);
+    expect(delay).toBeGreaterThan(29999);
+  });
 });
 
 describe('shouldRetry decision table', () => {
