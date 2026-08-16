@@ -190,6 +190,18 @@ describe('exponential backoff', () => {
   });
 });
 
+describe('backoff jitter (#128)', () => {
+  test('repeated calls with the same attemptsCompleted produce a distribution, not an identical value', () => {
+    // Simulates 100 deliveries all failing on attempt 1 "at once" — before
+    // jitter, every one of these computed exactly the same delay.
+    const delays = new Set();
+    for (let i = 0; i < 100; i++) {
+      delays.add(dispatcher.backoffMs(1));
+    }
+    expect(delays.size).toBeGreaterThan(1);
+  });
+});
+
 describe('shouldRetry decision table', () => {
   test('retries on network error', () => expect(dispatcher.shouldRetry(null, true)).toBe(true));
   test('retries on 500', () => expect(dispatcher.shouldRetry(500, false)).toBe(true));
