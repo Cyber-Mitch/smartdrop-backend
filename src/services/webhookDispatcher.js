@@ -10,10 +10,34 @@ const deliveryRepo = require('../repositories/deliveryRepository');
 
 const USER_AGENT = 'SmartDrop-Webhooks/1.0';
 
-function backoffMs(attemptsCompleted) {
+/**
+ * Computes the retry delay for a webhook delivery that has completed
+ * `attemptsCompleted` attempts, using exponential backoff with "equal
+ * jitter": half of the deterministic delay is fixed, the other half is
+ * randomized within [0, half). This spreads out deliveries that fail at
+ * the same attempt count around the same wall-clock moment — preventing
+ * the synchronized-retry thundering-herd burst described in #128 — while
+ * keeping the result always within [deterministic/2, deterministic):
+ * never zero or negative, and never reaching or exceeding the original
+ * deterministic delay, so worst-case retry latency stays predictable for
+ * operators. "Full jitter" (uniformly random in [0, deterministic)) was
+ * considered and rejected: it can produce near-immediate retries, and —
+ * with the default 2x factor — its range for one attempt overlaps the
+ * next attempt's range, which would make delays non-monotonic across
+ * attempts.
+ *
+ * The random source is injectable via `options.random` (mirroring
+ * CircuitBreaker's `options.now`/`options.logger` pattern in
+ * `utils/circuitBreaker.js`) so tests can assert exact min/max bounds
+ * rather than only "looks random".
+ */
+function backoffMs(attemptsCompleted, options = {}) {
+  const random = options.random || Math.random;
   const base = config.webhooks.retryBaseMs;
   const factor = config.webhooks.retryFactor;
-  return base * factor ** (attemptsCompleted - 1);
+  const deterministicDelay = base * factor ** (attemptsCompleted - 1);
+  const half = deterministicDelay / 2;
+  return half + random() * half;
 }
 
 function shouldRetry(responseStatus, networkError) {
