@@ -244,6 +244,17 @@ describe('backoff jitter (#128)', () => {
     const attempt3Min = dispatcher.backoffMs(3, { random: () => 0 });
     expect(attempt3Min).toBeGreaterThan(attempt2Max);
   });
+
+  test('defaults to the real Math.random when no random source is injected', () => {
+    const spy = jest.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const delay = dispatcher.backoffMs(1);
+      expect(spy).toHaveBeenCalled();
+      expect(delay).toBe(15000 + 0.5 * 15000);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe('shouldRetry decision table', () => {
