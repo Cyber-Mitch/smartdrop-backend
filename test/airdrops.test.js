@@ -241,8 +241,11 @@ describe('GET /api/v1/airdrops', () => {
 
     const response = await request(app).get('/api/v1/airdrops?page=1&limit=2');
     expect(response.status).toBe(200);
-    expect(response.body.airdrops).toHaveLength(2);
+    // Canonical pagination envelope (#131): array under `data`, not `airdrops`.
+    expect(response.body.data).toHaveLength(2);
     expect(response.body.pagination.total).toBe(2);
+    expect(response.body.pagination.has_next).toBe(false);
+    expect(response.body.pagination.has_prev).toBe(false);
   });
 });
 
@@ -477,6 +480,8 @@ describe('GET /api/v1/airdrops/:id/recipients', () => {
 
     const listResponse = await request(app).get(`/api/v1/airdrops/${createResponse.body.id}/recipients`);
     expect(listResponse.status).toBe(200);
-    expect(listResponse.body.recipients).toHaveLength(2);
+    // Canonical pagination envelope (#131): array under `data`, not `recipients`.
+    expect(listResponse.body.data).toHaveLength(2);
+    expect(listResponse.body.pagination.total).toBe(2);
   });
 });

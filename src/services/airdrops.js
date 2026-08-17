@@ -133,6 +133,10 @@ async function markExpired(id, currentLedger) {
   return JSON.parse(result);
 }
 
+// Returns { airdrops, total } rather than a full pagination envelope — the
+// route layer wraps this in the canonical envelope via
+// utils/paginate.js's paginateResponse, the same split routes/alerts.js
+// already uses for its own list endpoint (#131).
 async function list(page = 1, limit = 20) {
   const redis = cache.getClient();
   const total = await redis.zcard(IDS_KEY);
@@ -141,15 +145,7 @@ async function list(page = 1, limit = 20) {
   const paginatedIds = await redis.zrevrange(IDS_KEY, start, end);
   const airdrops = await Promise.all(paginatedIds.map((id) => cache.get(airdropKey(id))));
 
-  return {
-    airdrops: airdrops.filter(Boolean),
-    pagination: {
-      page,
-      limit,
-      total,
-      total_pages: Math.ceil(total / limit),
-    },
-  };
+  return { airdrops: airdrops.filter(Boolean), total };
 }
 
 async function get(id) {
@@ -207,6 +203,7 @@ async function addRecipients(airdropId, recipients) {
   await redis.rpush(recipientsKey(airdropId), ...recipients.map((r) => JSON.stringify(r)));
 }
 
+// Returns { recipients, total } — see list()'s comment above.
 async function listRecipients(airdropId, page = 1, limit = 20) {
   const redis = cache.getClient();
   const total = await redis.llen(recipientsKey(airdropId));
@@ -215,15 +212,7 @@ async function listRecipients(airdropId, page = 1, limit = 20) {
   const serializedRecipients = await redis.lrange(recipientsKey(airdropId), start, end);
   const recipients = serializedRecipients.map((r) => JSON.parse(r));
 
-  return {
-    recipients,
-    pagination: {
-      page,
-      limit,
-      total,
-      total_pages: Math.ceil(total / limit),
-    },
-  };
+  return { recipients, total };
 }
 
 module.exports = {
