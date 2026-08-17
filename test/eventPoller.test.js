@@ -116,4 +116,43 @@ describe('EventPoller', () => {
 
     await expect(poller.pollOnce()).resolves.toMatchObject({ skipped: true });
   });
+
+  describe('truncated batch (#115)', () => {
+    test('advances last_ledger only to the last processed event, not to the chain tip', async () => {
+      const pollLimit = 5;
+      // Simulates a real burst/backlog: exactly pollLimit events returned,
+      // last event's ledger (24) is far behind the chain tip (500).
+      const events = contractEvents(pollLimit, 20);
+      const server = {
+        getEvents: jest.fn(async () => ({ latestLedger: 500, events })),
+      };
+      const store = {
+        getLastLedger: jest.fn(async () => null),
+        saveEvent: jest.fn(async () => {}),
+        setLastLedger: jest.fn(async () => {}),
+      };
+      const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+
+      const poller = new EventPoller({
+        enabled: true,
+        contractId: 'CCONTRACT',
+        startLedger: 10,
+        pollLimit,
+        server,
+        store,
+        logger,
+      });
+
+      const result = await poller.pollOnce();
+
+      // Not 500 (response.latestLedger) — that would permanently skip
+      // whatever exists between ledger 24 and the tip.
+      expect(store.setLastLedger).toHaveBeenCalledWith(24);
+      expect(result).toMatchObject({ truncated: true, indexed_events: pollLimit });
+      expect(logger.warn).toHaveBeenCalledWith(
+        'SmartDrop event poll truncated by pollLimit; more events pending next cycle',
+        expect.objectContaining({ pollLimit, indexed_events: pollLimit, resumed_from_ledger: 25 }),
+      );
+    });
+  });
 });
