@@ -154,5 +154,54 @@ describe('EventPoller', () => {
         expect.objectContaining({ pollLimit, indexed_events: pollLimit, resumed_from_ledger: 25 }),
       );
     });
+
+    test('the next poll resumes from the last processed event, picking up previously-skippable events', async () => {
+      const pollLimit = 5;
+      const firstBatch = contractEvents(pollLimit, 20); // ledgers 20-24
+      // Events that would have been silently skipped pre-fix: they sit
+      // between the last processed ledger (24) and the previous poll's
+      // chain-tip snapshot (500).
+      const skippableRangeEvents = contractEvents(2, 100); // ledgers 100-101
+
+      const server = { getEvents: jest.fn() };
+      server.getEvents
+        .mockImplementationOnce(async () => ({ latestLedger: 500, events: firstBatch }))
+        .mockImplementationOnce(async () => ({ latestLedger: 500, events: skippableRangeEvents }));
+
+      // Stateful store, so the second pollOnce() actually reads back what
+      // the first one wrote — proves resumption across ticks, not just
+      // within one call.
+      let lastLedger = null;
+      const store = {
+        getLastLedger: jest.fn(async () => lastLedger),
+        saveEvent: jest.fn(async () => {}),
+        setLastLedger: jest.fn(async (ledger) => {
+          lastLedger = ledger;
+        }),
+      };
+
+      const poller = new EventPoller({
+        enabled: true,
+        contractId: 'CCONTRACT',
+        startLedger: 10,
+        pollLimit,
+        server,
+        store,
+        logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      });
+
+      const first = await poller.pollOnce();
+      expect(first.truncated).toBe(true);
+      expect(lastLedger).toBe(24);
+
+      const second = await poller.pollOnce();
+
+      // Resumed from 25 (last processed + 1), not 501 (tip + 1) — the
+      // pre-fix bug would have started here at 501, skipping ledgers
+      // 25-499 (including skippableRangeEvents) forever.
+      expect(server.getEvents.mock.calls[1][0].startLedger).toBe(25);
+      expect(second.indexed_events).toBe(2);
+      expect(store.saveEvent).toHaveBeenCalledTimes(pollLimit + 2);
+    });
   });
 });
