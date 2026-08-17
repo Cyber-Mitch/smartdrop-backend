@@ -46,7 +46,12 @@ function createCacheMock() {
       const z = zsets.get(key);
       if (!z) return [];
       const sorted = [...z.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m);
-      return sorted.slice(start, stop + 1);
+      // Real Redis treats negative indices as counting from the end
+      // (-1 = last element) — needed for the common "N to the end"
+      // idiom (e.g. ZREVRANGE key 0 -1), which plain `slice(start,
+      // stop + 1)` gets wrong for any negative stop (#131).
+      const resolveIndex = (i) => (i < 0 ? Math.max(sorted.length + i, 0) : i);
+      return sorted.slice(resolveIndex(start), resolveIndex(stop) + 1);
     }),
     zrangebyscore: jest.fn(async (key, min, max, ...rest) => {
       const z = zsets.get(key);
