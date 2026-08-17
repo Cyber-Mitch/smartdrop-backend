@@ -266,6 +266,46 @@ The application reads configurations from the `.env` file at the root.
 
 ## API Endpoints
 
+### Pagination
+
+Every list endpoint returns the same envelope shape:
+
+```json
+{
+  "data": [ /* ... */ ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 42,
+    "total_pages": 3,
+    "has_next": true,
+    "has_prev": false
+  }
+}
+```
+
+Request pagination with `?page=<n>&limit=<n>` (`page` defaults to 1,
+`limit` defaults to 20 and is clamped to 100). This is the canonical
+shape `src/schemas/pagination.js`'s `paginatedResponseSchema` defines,
+now applied consistently across every list endpoint (#131 — closed
+issue #35 introduced the helper but didn't get every endpoint onto it).
+
+List endpoints following this contract:
+
+- `GET /api/v1/airdrops`
+- `GET /api/v1/airdrops/:id/recipients`
+- `GET /api/v1/alerts`
+- `GET /api/v1/webhooks`
+- `GET /api/v1/airdrops/:id/onchain-recipients`
+- `GET /api/v1/recipients/:address/claims`
+
+**Intentionally exempt:** `GET /api/v1/webhooks/:id/deliveries` takes
+only `?limit=<n>` (default 50, max 100) — deliveries are naturally
+most-recent-first and capped server-side, so a `page`/offset concept
+doesn't add anything; forcing it onto the same envelope would just add
+an always-`page: 1`, always-`has_prev: false` `pagination` object with
+no real paging behavior behind it.
+
 ### Get Asset Price
 
 ```
