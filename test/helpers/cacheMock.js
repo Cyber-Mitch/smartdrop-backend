@@ -36,6 +36,7 @@ function createCacheMock() {
     sadd: jest.fn(async (key, val) => { getSet(key).add(val); }),
     srem: jest.fn(async (key, val) => { sets.get(key)?.delete(val); }),
     zadd: jest.fn(async (key, score, member) => { getZSet(key).set(member, Number(score)); }),
+    zcard: jest.fn(async (key) => (zsets.get(key) || new Map()).size),
     zrem: jest.fn(async (key, ...members) => {
       const z = zsets.get(key);
       if (!z) return;
