@@ -69,22 +69,45 @@ describe('indexer routes', () => {
     expect(res.status).toBe(404);
   });
 
-  test('returns indexed recipients', async () => {
+  test('returns indexed recipients in the canonical pagination envelope (#131)', async () => {
     mockGetAirdropRecipients.mockResolvedValue([{ recipient: 'GRECIPIENT', status: 'claimed' }]);
 
     const res = await request(buildApp()).get('/api/v1/airdrops/drop-1/onchain-recipients');
 
     expect(res.status).toBe(200);
-    expect(res.body.recipients).toHaveLength(1);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.pagination).toMatchObject({ page: 1, limit: 20, total: 1 });
   });
 
-  test('returns recipient claims', async () => {
+  test('returns recipient claims in the canonical pagination envelope (#131)', async () => {
     mockGetRecipientClaims.mockResolvedValue([{ airdrop_id: 'drop-1', amount: '25' }]);
 
     const res = await request(buildApp()).get('/api/v1/recipients/GRECIPIENT12345/claims');
 
     expect(res.status).toBe(200);
-    expect(res.body.claims).toEqual([{ airdrop_id: 'drop-1', amount: '25' }]);
+    expect(res.body.data).toEqual([{ airdrop_id: 'drop-1', amount: '25' }]);
+    expect(res.body.pagination).toMatchObject({ page: 1, limit: 20, total: 1 });
+  });
+
+  test('paginates recipient claims with page/limit query params (#131)', async () => {
+    mockGetRecipientClaims.mockResolvedValue(
+      Array.from({ length: 3 }, (_, i) => ({ airdrop_id: `drop-${i}`, amount: '1' })),
+    );
+
+    const res = await request(buildApp()).get(
+      '/api/v1/recipients/GRECIPIENT12345/claims?page=1&limit=2',
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.pagination).toMatchObject({
+      page: 1,
+      limit: 2,
+      total: 3,
+      total_pages: 2,
+      has_next: true,
+      has_prev: false,
+    });
   });
 
   test('returns indexer status with ledger and event counts', async () => {
