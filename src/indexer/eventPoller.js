@@ -59,19 +59,36 @@ class EventPoller {
       limit: this.pollLimit,
     });
 
-    const parsedEvents = (response.events || [])
-      .map(parseContractEvent)
-      .filter(Boolean);
+    const rawEvents = response.events || [];
+    const parsedEvents = rawEvents.map(parseContractEvent).filter(Boolean);
 
     for (const event of parsedEvents) {
       await this.store.saveEvent(event);
     }
 
-    const latestIndexedLedger = Math.max(
-      response.latestLedger || previousLedger,
-      ...parsedEvents.map((event) => event.ledger)
-    );
+    // response.latestLedger is the chain's current tip, not how far this
+    // particular call actually got — if the RPC returned a full pollLimit
+    // batch, more matching events may exist beyond it. Jumping the cursor
+    // to the tip in that case permanently skips whatever wasn't returned,
+    // with no retry and no downstream reconciliation that could recover
+    // it (#115). Only safe to advance to the tip when this batch wasn't
+    // truncated; otherwise advance only past what was actually processed,
+    // so the next poll picks up right where this one left off.
+    const truncated = rawEvents.length >= this.pollLimit;
+    const eventLedgers = parsedEvents.map((event) => event.ledger);
+    const latestIndexedLedger = truncated
+      ? Math.max(previousLedger ?? 0, ...eventLedgers)
+      : Math.max(response.latestLedger || previousLedger || 0, ...eventLedgers);
+
     await this.store.setLastLedger(latestIndexedLedger);
+
+    if (truncated) {
+      this.logger.warn('SmartDrop event poll truncated by pollLimit; more events pending next cycle', {
+        pollLimit: this.pollLimit,
+        indexed_events: parsedEvents.length,
+        resumed_from_ledger: latestIndexedLedger + 1,
+      });
+    }
 
     this.latestLedger = response.latestLedger || null;
     this.lastRun = new Date().toISOString();
@@ -82,6 +99,7 @@ class EventPoller {
       start_ledger: startLedger,
       latest_ledger: response.latestLedger,
       indexed_events: parsedEvents.length,
+      truncated,
     };
   }
 
