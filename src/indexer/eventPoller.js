@@ -99,6 +99,7 @@ class EventPoller {
       start_ledger: startLedger,
       latest_ledger: response.latestLedger,
       indexed_events: parsedEvents.length,
+      truncated,
     };
   }
 
