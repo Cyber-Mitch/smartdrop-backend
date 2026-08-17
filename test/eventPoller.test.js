@@ -3,7 +3,7 @@
 const { nativeToScVal } = require('stellar-sdk');
 const { EventPoller } = require('../src/indexer/eventPoller');
 
-function contractEvent() {
+function contractEvent(overrides = {}) {
   return {
     id: 'evt-1',
     type: 'contract',
@@ -19,7 +19,28 @@ function contractEvent() {
       total_amount: 1000n,
       expiry_ledger: 500n,
     }),
+    ...overrides,
   };
+}
+
+// N distinct events at consecutive ledgers starting at `startLedger`, used
+// to simulate a burst/backlog large enough to fill a batch of size `n`.
+function contractEvents(n, startLedger) {
+  return Array.from({ length: n }, (_, i) => {
+    const ledger = startLedger + i;
+    return contractEvent({
+      id: `evt-${ledger}`,
+      ledger,
+      pagingToken: `${ledger}-1`,
+      value: nativeToScVal({
+        airdrop_id: `drop-${ledger}`,
+        creator: 'GCREATOR',
+        token: 'USDC',
+        total_amount: 1000n,
+        expiry_ledger: 500n,
+      }),
+    });
+  });
 }
 
 describe('EventPoller', () => {
