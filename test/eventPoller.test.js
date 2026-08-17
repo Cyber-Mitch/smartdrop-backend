@@ -203,5 +203,35 @@ describe('EventPoller', () => {
       expect(second.indexed_events).toBe(2);
       expect(store.saveEvent).toHaveBeenCalledTimes(pollLimit + 2);
     });
+
+    test('a batch smaller than pollLimit still advances to the chain tip and logs no warning', async () => {
+      const pollLimit = 100;
+      const events = contractEvents(3, 20);
+      const server = {
+        getEvents: jest.fn(async () => ({ latestLedger: 500, events })),
+      };
+      const store = {
+        getLastLedger: jest.fn(async () => null),
+        saveEvent: jest.fn(async () => {}),
+        setLastLedger: jest.fn(async () => {}),
+      };
+      const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+
+      const poller = new EventPoller({
+        enabled: true,
+        contractId: 'CCONTRACT',
+        startLedger: 10,
+        pollLimit,
+        server,
+        store,
+        logger,
+      });
+
+      const result = await poller.pollOnce();
+
+      expect(store.setLastLedger).toHaveBeenCalledWith(500);
+      expect(result.truncated).toBe(false);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
   });
 });
