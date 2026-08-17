@@ -2,12 +2,13 @@
 
 /**
  * In-memory mock of the ioredis surface used by src/services/cache.js.
- * Covers strings (used by cache.get/set/del), SETs, and sorted SETs.
+ * Covers strings (used by cache.get/set/del), SETs, sorted SETs, and LISTs.
  */
 function createCacheMock() {
   const store = new Map();
   const sets = new Map();
   const zsets = new Map();
+  const lists = new Map();
   const counters = new Map();
   // Separate raw string store (with per-key TTL) backing redis.set/get/del —
   // distinct from `store` above, which backs the higher-level cacheMock.
@@ -21,6 +22,10 @@ function createCacheMock() {
   function getZSet(key) {
     if (!zsets.has(key)) zsets.set(key, new Map());
     return zsets.get(key);
+  }
+  function getList(key) {
+    if (!lists.has(key)) lists.set(key, []);
+    return lists.get(key);
   }
   function isExpired(entry) {
     return entry.expiresAt !== null && Date.now() >= entry.expiresAt;
@@ -37,6 +42,13 @@ function createCacheMock() {
     srem: jest.fn(async (key, val) => { sets.get(key)?.delete(val); }),
     zadd: jest.fn(async (key, score, member) => { getZSet(key).set(member, Number(score)); }),
     zcard: jest.fn(async (key) => (zsets.get(key) || new Map()).size),
+    rpush: jest.fn(async (key, ...vals) => { getList(key).push(...vals); }),
+    llen: jest.fn(async (key) => (lists.get(key) || []).length),
+    lrange: jest.fn(async (key, start, stop) => {
+      const list = lists.get(key) || [];
+      const resolveIndex = (i) => (i < 0 ? Math.max(list.length + i, 0) : i);
+      return list.slice(resolveIndex(start), resolveIndex(stop) + 1);
+    }),
     zrem: jest.fn(async (key, ...members) => {
       const z = zsets.get(key);
       if (!z) return;
@@ -178,6 +190,7 @@ function createCacheMock() {
     store.clear();
     sets.clear();
     zsets.clear();
+    lists.clear();
     counters.clear();
     rawStore.clear();
     Object.values(redis).forEach((fn) => fn.mockClear?.());
@@ -186,7 +199,7 @@ function createCacheMock() {
     cacheMock.del.mockClear();
   }
 
-  return { cacheMock, redis, store, sets, zsets, counters, reset };
+  return { cacheMock, redis, store, sets, zsets, lists, counters, reset };
 }
 
 module.exports = { createCacheMock };
