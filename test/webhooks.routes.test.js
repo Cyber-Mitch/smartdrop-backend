@@ -86,9 +86,31 @@ describe('GET /api/v1/webhooks', () => {
     });
     const res = await request(app).get('/api/v1/webhooks');
     expect(res.status).toBe(200);
-    expect(res.body.webhooks).toHaveLength(1);
-    expect(res.body.webhooks[0].secret_preview).toMatch(/^whsec_/);
-    expect(res.body.webhooks[0]).not.toHaveProperty('secret');
+    // Canonical pagination envelope (#131): array under `data`, not `webhooks`.
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].secret_preview).toMatch(/^whsec_/);
+    expect(res.body.data[0]).not.toHaveProperty('secret');
+    expect(res.body.pagination).toMatchObject({ page: 1, limit: 20, total: 1 });
+  });
+
+  test('paginates registered webhooks with page/limit query params (#131)', async () => {
+    for (const letter of ['a', 'b', 'c']) {
+      await request(app).post('/api/v1/webhooks').send({
+        url: `https://${letter}.com`, events: ['*'], secret: `whsec_${letter}${letter}${letter}${letter}${letter}${letter}${letter}${letter}${letter}${letter}${letter}${letter}${letter}${letter}${letter}${letter}`,
+      });
+    }
+
+    const res = await request(app).get('/api/v1/webhooks?page=1&limit=2');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.pagination).toMatchObject({
+      page: 1,
+      limit: 2,
+      total: 3,
+      total_pages: 2,
+      has_next: true,
+      has_prev: false,
+    });
   });
 });
 
@@ -113,7 +135,7 @@ describe('DELETE /api/v1/webhooks/:id', () => {
     expect(del.body.deleted).toBe(true);
 
     const list = await request(app).get('/api/v1/webhooks');
-    expect(list.body.webhooks).toHaveLength(0);
+    expect(list.body.data).toHaveLength(0);
   });
 
   test('returns 404 when deleting unknown id', async () => {

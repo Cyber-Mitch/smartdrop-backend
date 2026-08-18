@@ -18,6 +18,7 @@ const {
 } = require('../validation/schemas');
 const buildRateLimit = require('../middleware/rateLimit');
 const { StrKey } = require('stellar-sdk');
+const { paginateResponse } = require('../utils/paginate');
 
 const router = express.Router();
 const CSV_PARSE_CHUNK_BYTES = 64 * 1024;
@@ -126,7 +127,7 @@ router.get('/airdrops', validatePaginationQuery, async (req, res, next) => {
   try {
     const { page, limit } = req.validated.query;
     const result = await airdropsService.list(page, limit);
-    return res.json(result);
+    return res.json(paginateResponse(result.airdrops, result.total, { page, limit }));
   } catch (err) {
     logger.error('List airdrops error', { error: err.message });
     return next(err);
@@ -241,7 +242,7 @@ router.get('/airdrops/:id/recipients', validateRouteIdParams, validatePagination
 
     const { page, limit } = req.validated.query;
     const result = await airdropsService.listRecipients(req.params.id, page, limit);
-    return res.json(result);
+    return res.json(paginateResponse(result.recipients, result.total, { page, limit }));
   } catch (err) {
     logger.error('List recipients error', { error: err.message });
     return next(err);

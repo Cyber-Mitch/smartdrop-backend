@@ -9,7 +9,9 @@ const dispatcher = require('../services/webhookDispatcher');
 const signatureService = require('../services/webhookSignature');
 const buildRateLimit = require('../middleware/rateLimit');
 const AppError = require('../errors/AppError');
+const { paginateResponse } = require('../utils/paginate');
 const {
+  paginationQuerySchema,
   routeIdParamsSchema,
   webhookCreateBodySchema,
   webhookDeliveriesQuerySchema,
@@ -18,6 +20,7 @@ const {
 
 const router = express.Router();
 const validateRouteIdParams = validate(routeIdParamsSchema, 'params');
+const validatePaginationQuery = validate(paginationQuerySchema, 'query');
 
 const manageLimit = buildRateLimit({
   windowSeconds: config.webhooks.rateLimit.windowSeconds,
@@ -68,10 +71,13 @@ router.post('/webhooks', validate(webhookCreateBodySchema), async (req, res, nex
   }
 });
 
-router.get('/webhooks', async (_req, res, next) => {
+router.get('/webhooks', validatePaginationQuery, async (req, res, next) => {
   try {
-    const webhooks = await webhookRepo.list();
-    return res.json({ webhooks: webhooks.map(publicView) });
+    const { page, limit } = req.validated.query;
+    const result = await webhookRepo.list(page, limit);
+    return res.json(
+      paginateResponse(result.webhooks.map(publicView), result.total, { page, limit }),
+    );
   } catch (err) {
     return next(err);
   }

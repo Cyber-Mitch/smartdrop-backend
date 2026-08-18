@@ -60,7 +60,11 @@ async function create({ url, events, secret, description }) {
   };
   const redis = cache.getClient();
   await cache.set(key(id), record);
-  await redis.sadd(IDS_KEY, id);
+  // A sorted set scored by creation time, not a plain set — mirrors
+  // airdropsService/alerts.js's own IDS_KEY pattern, so paginating (added
+  // below) walks a deterministic, newest-first order rather than
+  // whatever arbitrary order SMEMBERS happened to return (#131).
+  await redis.zadd(IDS_KEY, Date.parse(now), id);
   return normalize(record);
 }
 
@@ -69,15 +73,30 @@ async function findById(id) {
   return normalize(record);
 }
 
-async function list() {
+/** Every webhook, unpaginated — for internal fan-out (listActiveForEvent
+ * below), which needs the complete set to notify every subscriber, not a
+ * page of it. Not exposed as a public list endpoint; see list() for that. */
+async function listAll() {
   const redis = cache.getClient();
-  const ids = await redis.smembers(IDS_KEY);
+  const ids = await redis.zrevrange(IDS_KEY, 0, -1);
   const records = await Promise.all(ids.map((id) => cache.get(key(id))));
   return records.filter(Boolean).map(normalize);
 }
 
+/** Returns { webhooks, total } — see routes/webhooks.js for how this is
+ * wrapped in the canonical pagination envelope. */
+async function list(page = 1, limit = 20) {
+  const redis = cache.getClient();
+  const total = await redis.zcard(IDS_KEY);
+  const start = (page - 1) * limit;
+  const end = start + limit - 1;
+  const ids = await redis.zrevrange(IDS_KEY, start, end);
+  const records = await Promise.all(ids.map((id) => cache.get(key(id))));
+  return { webhooks: records.filter(Boolean).map(normalize), total };
+}
+
 async function listActiveForEvent(eventType, matcher) {
-  const all = await list();
+  const all = await listAll();
   return all.filter((w) => w.active && matcher(w.events, eventType));
 }
 
@@ -100,7 +119,7 @@ async function remove(id) {
   const existing = await cache.get(key(id));
   if (!existing) return null;
   await cache.del(key(id));
-  await redis.srem(IDS_KEY, id);
+  await redis.zrem(IDS_KEY, id);
   return normalize(existing);
 }
 
@@ -108,6 +127,7 @@ module.exports = {
   create,
   findById,
   list,
+  listAll,
   listActiveForEvent,
   update,
   remove,

@@ -2,6 +2,7 @@ const express = require('express');
 const eventStore = require('../indexer/eventStore');
 const indexerPoller = require('../indexer/runtime');
 const logger = require('../logger');
+const { parsePagination, paginateResponse } = require('../utils/paginate');
 
 const router = express.Router();
 
@@ -37,14 +38,22 @@ router.get('/airdrops/:id/status', async (req, res) => {
 // routers previously registered the exact same path, and since this
 // router is mounted first in src/index.js, it silently shadowed the real
 // listRecipients handler in airdrops.js on every request.
+// getAirdropRecipients/getRecipientClaims below fully materialize their
+// list from a single Redis key regardless (see eventStore.js's
+// getJsonList) — there's no server-side "fetch only a page" available at
+// the storage layer, so pagination here is a slice of the already-fetched
+// array plus the canonical envelope, not a more efficient query (#131).
 router.get('/airdrops/:id/onchain-recipients', async (req, res) => {
   try {
     if (!isValidId(req.params.id)) {
       return res.status(400).json({ error: 'Invalid airdrop id' });
     }
 
-    const recipients = await eventStore.getAirdropRecipients(req.params.id);
-    return res.json({ airdrop_id: req.params.id, recipients });
+    const allRecipients = await eventStore.getAirdropRecipients(req.params.id);
+    const { page, limit } = parsePagination(req.query);
+    const start = (page - 1) * limit;
+    const pageRecipients = allRecipients.slice(start, start + limit);
+    return res.json(paginateResponse(pageRecipients, allRecipients.length, { page, limit }));
   } catch (err) {
     logger.error('Airdrop recipients lookup failed', { error: err.message });
     return res.status(500).json({ error: 'Internal server error' });
@@ -57,8 +66,11 @@ router.get('/recipients/:address/claims', async (req, res) => {
       return res.status(400).json({ error: 'Invalid recipient address' });
     }
 
-    const claims = await eventStore.getRecipientClaims(req.params.address);
-    return res.json({ recipient: req.params.address, claims });
+    const allClaims = await eventStore.getRecipientClaims(req.params.address);
+    const { page, limit } = parsePagination(req.query);
+    const start = (page - 1) * limit;
+    const pageClaims = allClaims.slice(start, start + limit);
+    return res.json(paginateResponse(pageClaims, allClaims.length, { page, limit }));
   } catch (err) {
     logger.error('Recipient claims lookup failed', { error: err.message });
     return res.status(500).json({ error: 'Internal server error' });

@@ -41,11 +41,30 @@ describe('webhookRepository', () => {
     expect(await webhookRepo.findById('wh_nope')).toBeNull();
   });
 
-  test('list returns all created webhooks', async () => {
+  test('listAll returns every created webhook, unpaginated', async () => {
     await webhookRepo.create({ url: 'https://a.com', events: ['*'], secret: 'whsec_aaaaaaaaaaaaaaaa' });
     await webhookRepo.create({ url: 'https://b.com', events: ['*'], secret: 'whsec_bbbbbbbbbbbbbbbb' });
-    const all = await webhookRepo.list();
+    const all = await webhookRepo.listAll();
     expect(all).toHaveLength(2);
+  });
+
+  test('list returns a paginated { webhooks, total } page (#131)', async () => {
+    await webhookRepo.create({ url: 'https://a.com', events: ['*'], secret: 'whsec_aaaaaaaaaaaaaaaa' });
+    await webhookRepo.create({ url: 'https://b.com', events: ['*'], secret: 'whsec_bbbbbbbbbbbbbbbb' });
+    await webhookRepo.create({ url: 'https://c.com', events: ['*'], secret: 'whsec_cccccccccccccccc' });
+
+    const page1 = await webhookRepo.list(1, 2);
+    expect(page1.webhooks).toHaveLength(2);
+    expect(page1.total).toBe(3);
+
+    const page2 = await webhookRepo.list(2, 2);
+    expect(page2.webhooks).toHaveLength(1);
+    expect(page2.total).toBe(3);
+
+    // No overlap between pages.
+    const page1Ids = page1.webhooks.map((w) => w.id);
+    const page2Ids = page2.webhooks.map((w) => w.id);
+    expect(page1Ids.some((id) => page2Ids.includes(id))).toBe(false);
   });
 
   test('update merges patch and bumps updated_at', async () => {
@@ -60,7 +79,7 @@ describe('webhookRepository', () => {
     const w = await webhookRepo.create({ url: 'https://a.com', events: ['*'], secret: 'whsec_aaaaaaaaaaaaaaaa' });
     const removed = await webhookRepo.remove(w.id);
     expect(removed.id).toBe(w.id);
-    expect(await webhookRepo.list()).toHaveLength(0);
+    expect(await webhookRepo.listAll()).toHaveLength(0);
   });
 
   test('listActiveForEvent filters by subscription and active flag', async () => {
