@@ -100,14 +100,13 @@ async function fire(alert, priceUsd) {
   await webhook.deliver(alert.webhook_url, alert.webhook_secret, payload);
 }
 
-async function evaluateForAsset(asset, priceUsd) {
-  const redis = cache.getClient();
-  const ids = await redis.zrevrange(IDS_KEY, 0, -1);
-
-  for (const id of ids) {
-    const alert = await cache.get(alertKey(id));
-    if (!alert || alert.asset !== asset.toUpperCase()) continue;
-
+// Evaluates an already-fetched list of alerts against a price. Extracted out
+// of evaluateForAsset's per-id loop so the trigger/cooldown/fire/persist
+// logic has one implementation, usable against any array of alert objects
+// regardless of how they were fetched.
+async function evaluateAlertList(alerts, priceUsd) {
+  for (const alert of alerts) {
+    if (!alert) continue;
     if (!isTriggered(alert, priceUsd)) continue;
 
     if (alert.repeat && alert.last_fired_at) {
@@ -118,12 +117,25 @@ async function evaluateForAsset(asset, priceUsd) {
     await fire(alert, priceUsd);
 
     if (!alert.repeat) {
-      await remove(id);
+      await remove(alert.id);
     } else {
       alert.last_fired_at = new Date().toISOString();
-      await cache.set(alertKey(id), alert);
+      await cache.set(alertKey(alert.id), alert);
     }
   }
+}
+
+async function evaluateForAsset(asset, priceUsd) {
+  const redis = cache.getClient();
+  const ids = await redis.zrevrange(IDS_KEY, 0, -1);
+
+  const matching = [];
+  for (const id of ids) {
+    const alert = await cache.get(alertKey(id));
+    if (alert && alert.asset === asset.toUpperCase()) matching.push(alert);
+  }
+
+  await evaluateAlertList(matching, priceUsd);
 }
 
 async function evaluateAll() {
