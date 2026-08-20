@@ -128,13 +128,8 @@ async function evaluateAlertList(alerts, priceUsd) {
 async function evaluateForAsset(asset, priceUsd) {
   const redis = cache.getClient();
   const ids = await redis.zrevrange(IDS_KEY, 0, -1);
-
-  const matching = [];
-  for (const id of ids) {
-    const alert = await cache.get(alertKey(id));
-    if (alert && alert.asset === asset.toUpperCase()) matching.push(alert);
-  }
-
+  const alerts = await Promise.all(ids.map((id) => cache.get(alertKey(id))));
+  const matching = alerts.filter((alert) => alert && alert.asset === asset.toUpperCase());
   await evaluateAlertList(matching, priceUsd);
 }
 
