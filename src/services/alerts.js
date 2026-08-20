@@ -100,13 +100,14 @@ async function fire(alert, priceUsd) {
   await webhook.deliver(alert.webhook_url, alert.webhook_secret, payload);
 }
 
-// Evaluates an already-fetched list of alerts against a price. Extracted out
-// of evaluateForAsset's per-id loop so the trigger/cooldown/fire/persist
-// logic has one implementation, usable against any array of alert objects
-// regardless of how they were fetched.
-async function evaluateAlertList(alerts, priceUsd) {
-  for (const alert of alerts) {
-    if (!alert) continue;
+async function evaluateForAsset(asset, priceUsd) {
+  const redis = cache.getClient();
+  const ids = await redis.zrevrange(IDS_KEY, 0, -1);
+
+  for (const id of ids) {
+    const alert = await cache.get(alertKey(id));
+    if (!alert || alert.asset !== asset.toUpperCase()) continue;
+
     if (!isTriggered(alert, priceUsd)) continue;
 
     if (alert.repeat && alert.last_fired_at) {
@@ -117,67 +118,22 @@ async function evaluateAlertList(alerts, priceUsd) {
     await fire(alert, priceUsd);
 
     if (!alert.repeat) {
-      await remove(alert.id);
+      await remove(id);
     } else {
       alert.last_fired_at = new Date().toISOString();
-      await cache.set(alertKey(alert.id), alert);
+      await cache.set(alertKey(id), alert);
     }
   }
 }
 
-// Standalone entry point for evaluating a single asset. Reads the full alert
-// list fresh from Redis on every call (rather than reusing any snapshot),
-// which matters for callers invoking this directly for one asset right
-// after an alert may have been created — evaluateAll does not call this
-// function; see its own comment below for why it takes one upfront
-// snapshot instead.
-async function evaluateForAsset(asset, priceUsd) {
-  const redis = cache.getClient();
-  const ids = await redis.zrevrange(IDS_KEY, 0, -1);
-  const alerts = await Promise.all(ids.map((id) => cache.get(alertKey(id))));
-  const matching = alerts.filter((alert) => alert && alert.asset === asset.toUpperCase());
-  await evaluateAlertList(matching, priceUsd);
-}
-
-// Evaluates every configured alert against the current cached price for its
-// asset, once per price-refresh cycle (see src/jobs/priceRefresh.js).
-//
-// Takes a single upfront snapshot via list() and groups it by asset in
-// memory, rather than re-reading the full alert set from Redis once per
-// distinct asset. There is no correctness reason to prefer a fresh
-// per-asset read here: an alert created concurrently mid-cycle simply gets
-// picked up on the *next* cycle (default every 30s, see
-// PRICE_REFRESH_INTERVAL_SECONDS), the same way it would if it had been
-// created a few seconds earlier and missed this cycle's snapshot entirely.
-// Re-reading per asset bought no additional correctness, only an O(assets *
-// alerts) multiplier on Redis round-trips — see issue #132.
-//
-// This still pulls every configured alert into the process on every cycle,
-// which is O(alerts) rather than O(assets * alerts) but not free at very
-// large alert counts. A secondary index (e.g. a per-asset
-// `alerts:by_asset:{asset}` Set, maintained incrementally on create/remove)
-// would let this touch only the alerts for assets whose price actually
-// changed this cycle. Worth revisiting if alert counts grow large enough
-// for the single list() fetch itself to matter; out of scope here since the
-// issue's acceptance criteria only call for eliminating the redundant
-// per-asset re-fetch.
 async function evaluateAll() {
   const allAlerts = await list();
+  const assets = [...new Set(allAlerts.map((a) => a.asset))];
 
-  const alertsByAsset = new Map();
-  for (const alert of allAlerts) {
-    const bucket = alertsByAsset.get(alert.asset);
-    if (bucket) {
-      bucket.push(alert);
-    } else {
-      alertsByAsset.set(alert.asset, [alert]);
-    }
-  }
-
-  for (const [asset, alerts] of alertsByAsset) {
+  for (const asset of assets) {
     const cached = await cache.get(`price:${asset}`);
     if (!cached || cached.price == null) continue;
-    await evaluateAlertList(alerts, cached.price);
+    await evaluateForAsset(asset, cached.price);
   }
 }
 
