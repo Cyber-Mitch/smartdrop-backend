@@ -135,12 +135,21 @@ async function evaluateForAsset(asset, priceUsd) {
 
 async function evaluateAll() {
   const allAlerts = await list();
-  const assets = [...new Set(allAlerts.map((a) => a.asset))];
 
-  for (const asset of assets) {
+  const alertsByAsset = new Map();
+  for (const alert of allAlerts) {
+    const bucket = alertsByAsset.get(alert.asset);
+    if (bucket) {
+      bucket.push(alert);
+    } else {
+      alertsByAsset.set(alert.asset, [alert]);
+    }
+  }
+
+  for (const [asset, alerts] of alertsByAsset) {
     const cached = await cache.get(`price:${asset}`);
     if (!cached || cached.price == null) continue;
-    await evaluateForAsset(asset, cached.price);
+    await evaluateAlertList(alerts, cached.price);
   }
 }
 
