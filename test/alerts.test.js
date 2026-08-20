@@ -280,4 +280,38 @@ describe('evaluateAll', () => {
     expect(cache.get).toHaveBeenCalledTimes(totalAlerts + assets.length);
     expect(mockWebhookDeliver).not.toHaveBeenCalled();
   });
+
+  test('only fires alerts for the asset whose cached price actually triggers them', async () => {
+    // Correctness check for the new in-memory grouping: an XLM alert must
+    // never fire off a BTC price, even though both are evaluated in the
+    // same evaluateAll() cycle now that alerts are grouped rather than
+    // evaluated one asset-at-a-time against a fresh Redis read.
+    mockStore.set('price:XLM', { price: 0.08 }); // triggers the XLM 'below 0.09' alert
+    mockStore.set('price:BTC', { price: 50000 }); // does not trigger the BTC 'below 0.09' alert
+
+    await makeAlert({ asset: 'XLM', threshold_usd: 0.09 });
+    await makeAlert({ asset: 'BTC', threshold_usd: 0.09 });
+
+    await alertsService.evaluateAll();
+
+    expect(mockWebhookDeliver).toHaveBeenCalledTimes(1);
+    expect(mockWebhookDeliver.mock.calls[0][2].asset).toBe('XLM');
+  });
+
+  test('removes non-repeat alerts and updates repeat alerts across multiple assets in one cycle', async () => {
+    mockStore.set('price:XLM', { price: 0.08 });
+    mockStore.set('price:BTC', { price: 0.08 });
+
+    await makeAlert({ asset: 'XLM', threshold_usd: 0.09, repeat: false });
+    await makeAlert({ asset: 'BTC', threshold_usd: 0.09, repeat: true });
+
+    await alertsService.evaluateAll();
+
+    expect(mockWebhookDeliver).toHaveBeenCalledTimes(2);
+
+    const remaining = await alertsService.list();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].asset).toBe('BTC');
+    expect(remaining[0].last_fired_at).not.toBeNull();
+  });
 });
