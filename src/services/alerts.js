@@ -151,6 +151,16 @@ async function evaluateForAsset(asset, priceUsd) {
 // created a few seconds earlier and missed this cycle's snapshot entirely.
 // Re-reading per asset bought no additional correctness, only an O(assets *
 // alerts) multiplier on Redis round-trips — see issue #132.
+//
+// This still pulls every configured alert into the process on every cycle,
+// which is O(alerts) rather than O(assets * alerts) but not free at very
+// large alert counts. A secondary index (e.g. a per-asset
+// `alerts:by_asset:{asset}` Set, maintained incrementally on create/remove)
+// would let this touch only the alerts for assets whose price actually
+// changed this cycle. Worth revisiting if alert counts grow large enough
+// for the single list() fetch itself to matter; out of scope here since the
+// issue's acceptance criteria only call for eliminating the redundant
+// per-asset re-fetch.
 async function evaluateAll() {
   const allAlerts = await list();
 
