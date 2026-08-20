@@ -253,4 +253,31 @@ describe('evaluateAll', () => {
     await alertsService.evaluateAll();
     expect(mockWebhookDeliver).not.toHaveBeenCalled();
   });
+
+  test('fetches the alert list once regardless of the number of distinct assets', async () => {
+    // Regression test for the O(assets * alerts) redundant re-fetch: with
+    // A distinct assets and M total alerts, a correct evaluateAll() performs
+    // exactly one zrevrange (from list()) and cache.get calls that scale
+    // with M + A (M alert records + A price lookups), never A * M.
+    const assets = ['XLM', 'USDC', 'BTC'];
+    const alertsPerAsset = 2;
+
+    for (const asset of assets) {
+      mockStore.set(`price:${asset}`, { price: 999 }); // never triggers 'below 0.09'
+      for (let i = 0; i < alertsPerAsset; i += 1) {
+        await makeAlert({ asset, threshold_usd: 0.09 });
+      }
+    }
+
+    const totalAlerts = assets.length * alertsPerAsset;
+
+    mockRedis.zrevrange.mockClear();
+    cache.get.mockClear();
+
+    await alertsService.evaluateAll();
+
+    expect(mockRedis.zrevrange).toHaveBeenCalledTimes(1);
+    expect(cache.get).toHaveBeenCalledTimes(totalAlerts + assets.length);
+    expect(mockWebhookDeliver).not.toHaveBeenCalled();
+  });
 });
