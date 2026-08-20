@@ -125,6 +125,12 @@ async function evaluateAlertList(alerts, priceUsd) {
   }
 }
 
+// Standalone entry point for evaluating a single asset. Reads the full alert
+// list fresh from Redis on every call (rather than reusing any snapshot),
+// which matters for callers invoking this directly for one asset right
+// after an alert may have been created — evaluateAll does not call this
+// function; see its own comment below for why it takes one upfront
+// snapshot instead.
 async function evaluateForAsset(asset, priceUsd) {
   const redis = cache.getClient();
   const ids = await redis.zrevrange(IDS_KEY, 0, -1);
@@ -133,6 +139,18 @@ async function evaluateForAsset(asset, priceUsd) {
   await evaluateAlertList(matching, priceUsd);
 }
 
+// Evaluates every configured alert against the current cached price for its
+// asset, once per price-refresh cycle (see src/jobs/priceRefresh.js).
+//
+// Takes a single upfront snapshot via list() and groups it by asset in
+// memory, rather than re-reading the full alert set from Redis once per
+// distinct asset. There is no correctness reason to prefer a fresh
+// per-asset read here: an alert created concurrently mid-cycle simply gets
+// picked up on the *next* cycle (default every 30s, see
+// PRICE_REFRESH_INTERVAL_SECONDS), the same way it would if it had been
+// created a few seconds earlier and missed this cycle's snapshot entirely.
+// Re-reading per asset bought no additional correctness, only an O(assets *
+// alerts) multiplier on Redis round-trips — see issue #132.
 async function evaluateAll() {
   const allAlerts = await list();
 
