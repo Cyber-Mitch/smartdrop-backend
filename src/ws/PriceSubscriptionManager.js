@@ -79,9 +79,21 @@ class PriceSubscriptionManager {
 
     if (msg.action === 'subscribe') {
       const requested = Array.isArray(msg.assets) ? msg.assets : [];
-      const allowed = requested.slice(0, MAX_ASSETS_PER_CLIENT);
-      for (const a of allowed) client.assets.add(String(a));
-      this._send(ws, { type: 'subscribed', assets: [...client.assets] });
+      // Enforce cumulative cap: only add assets while under the limit (#124).
+      const added = [];
+      for (const a of requested) {
+        if (client.assets.size >= MAX_ASSETS_PER_CLIENT) break;
+        const key = String(a);
+        if (!client.assets.has(key)) {
+          client.assets.add(key);
+          added.push(key);
+        }
+      }
+      if (added.length === 0 && client.assets.size >= MAX_ASSETS_PER_CLIENT && requested.length > 0) {
+        this._send(ws, { type: 'error', message: `Subscription cap reached (${MAX_ASSETS_PER_CLIENT} max)` });
+      } else {
+        this._send(ws, { type: 'subscribed', assets: [...client.assets] });
+      }
 
     } else if (msg.action === 'unsubscribe') {
       const toRemove = Array.isArray(msg.assets) ? msg.assets : [];
