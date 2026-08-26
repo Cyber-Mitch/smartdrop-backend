@@ -37,12 +37,13 @@ describe('dispatcher delivery success', () => {
     const w = await createWebhook();
     mockAxiosPost.mockResolvedValueOnce({ status: 200 });
 
-    const [delivery] = await dispatcher.dispatch({
+    const results = await dispatcher.dispatch({
       event_type: 'pool.assets_locked',
       event_id: 'evt_1',
       data: { pool_id: 'p1' },
     });
 
+    const [{ delivery }] = results;
     expect(delivery.status).toBe('success');
     expect(delivery.attempts).toBe(1);
     expect(delivery.response_status).toBe(200);
@@ -77,6 +78,64 @@ describe('dispatcher event-type filtering', () => {
     expect(urls).toEqual(['https://a.com', 'https://c.com']);
   });
 
+  test('payload includes monotonically increasing sequence number', async () => {
+    await createWebhook({ url: 'https://a.com', events: ['pool.assets_locked'] });
+    mockAxiosPost.mockResolvedValue({ status: 200 });
+
+    await dispatcher.dispatch({
+      event_type: 'pool.assets_locked',
+      event_id: 'evt_seq1',
+      data: { pool_id: 'p1' },
+    });
+    await dispatcher.dispatch({
+      event_type: 'pool.assets_locked',
+      event_id: 'evt_seq2',
+      data: { pool_id: 'p1' },
+    });
+
+    const bodies = mockAxiosPost.mock.calls.map((c) => JSON.parse(c[1]));
+    expect(bodies[0].sequence).toBe(1);
+    expect(bodies[1].sequence).toBe(2);
+  });
+
+  test('returns structured result with webhook_id and delivery', async () => {
+    await createWebhook({ url: 'https://a.com', events: ['pool.assets_locked'] });
+    mockAxiosPost.mockResolvedValue({ status: 200 });
+
+    const results = await dispatcher.dispatch({
+      event_type: 'pool.assets_locked',
+      event_id: 'evt_struct',
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toHaveProperty('webhook_id');
+    expect(results[0]).toHaveProperty('delivery');
+    expect(results[0].error).toBeNull();
+  });
+
+  test('captures error per-target when deliverToWebhook throws', async () => {
+    const good = await createWebhook({ url: 'https://good.com', events: ['pool.assets_locked'] });
+    const bad = await createWebhook({ url: 'https://bad.com', events: ['pool.assets_locked'] });
+    // good succeeds, bad fails
+    mockAxiosPost.mockImplementation(async (url) => {
+      if (url === 'https://bad.com') throw new Error('ECONNREFUSED');
+      return { status: 200 };
+    });
+
+    const results = await dispatcher.dispatch({
+      event_type: 'pool.assets_locked',
+      event_id: 'evt_partial',
+    });
+
+    expect(results).toHaveLength(2);
+    const goodResult = results.find((r) => r.webhook_id === good.id);
+    const badResult = results.find((r) => r.webhook_id === bad.id);
+    expect(goodResult.delivery.status).toBe('success');
+    // bad.com's attempt() catches internally and returns a delivery with status 'pending' (retryable)
+    expect(badResult.delivery.status).toBe('pending');
+    expect(badResult.delivery.last_error).toBe('ECONNREFUSED');
+  });
+
   test('inactive webhooks are skipped', async () => {
     const w = await createWebhook();
     await webhookRepo.update(w.id, { active: false });
@@ -106,11 +165,12 @@ describe('dispatcher retry semantics', () => {
     await createWebhook();
     mockAxiosPost.mockResolvedValueOnce({ status: 503 });
 
-    const [delivery] = await dispatcher.dispatch({
+    const results = await dispatcher.dispatch({
       event_type: 'pool.assets_locked',
       event_id: 'evt_retry',
     });
 
+    const [{ delivery }] = results;
     expect(delivery.status).toBe('pending');
     expect(delivery.attempts).toBe(1);
     expect(delivery.next_retry_at).not.toBeNull();
@@ -124,11 +184,12 @@ describe('dispatcher retry semantics', () => {
     await createWebhook();
     mockAxiosPost.mockResolvedValueOnce({ status: 400 });
 
-    const [delivery] = await dispatcher.dispatch({
+    const results = await dispatcher.dispatch({
       event_type: 'pool.assets_locked',
       event_id: 'evt_4xx',
     });
 
+    const [{ delivery }] = results;
     expect(delivery.status).toBe('failed');
     expect(delivery.attempts).toBe(1);
     expect(delivery.next_retry_at).toBeNull();
@@ -140,11 +201,12 @@ describe('dispatcher retry semantics', () => {
     await createWebhook();
     mockAxiosPost.mockRejectedValueOnce(new Error('ECONNREFUSED'));
 
-    const [delivery] = await dispatcher.dispatch({
+    const results = await dispatcher.dispatch({
       event_type: 'pool.assets_locked',
       event_id: 'evt_net',
     });
 
+    const [{ delivery }] = results;
     expect(delivery.status).toBe('pending');
     expect(delivery.last_error).toBe('ECONNREFUSED');
     expect(delivery.next_retry_at).not.toBeNull();
@@ -152,11 +214,12 @@ describe('dispatcher retry semantics', () => {
 
   test('after maxAttempts failures the delivery is permanently failed', async () => {
     await createWebhook();
-    const [delivery] = await dispatcher.dispatch({
+    const results = await dispatcher.dispatch({
       event_type: 'pool.assets_locked',
       event_id: 'evt_max',
     });
 
+    const [{ delivery }] = results;
     mockAxiosPost.mockResolvedValue({ status: 500 });
     const second = await dispatcher.attempt(delivery.id);
     const third = await dispatcher.attempt(delivery.id);
@@ -171,10 +234,11 @@ describe('dispatcher retry semantics', () => {
     await createWebhook();
     mockAxiosPost.mockResolvedValueOnce({ status: 429 });
 
-    const [delivery] = await dispatcher.dispatch({
+    const results = await dispatcher.dispatch({
       event_type: 'pool.assets_locked',
       event_id: 'evt_429',
     });
+    const [{ delivery }] = results;
     expect(delivery.status).toBe('pending');
     expect(delivery.next_retry_at).not.toBeNull();
   });
@@ -269,15 +333,15 @@ describe('thundering-herd prevention across a real dispatch tick (#128)', () => 
     }
     mockAxiosPost.mockResolvedValue({ status: 503 });
 
-    const deliveries = await dispatcher.dispatch({
+    const results = await dispatcher.dispatch({
       event_type: 'pool.assets_locked',
       event_id: 'evt_herd',
     });
 
-    expect(deliveries).toHaveLength(webhookCount);
-    deliveries.forEach((d) => expect(d.status).toBe('pending'));
+    expect(results).toHaveLength(webhookCount);
+    results.forEach((r) => expect(r.delivery.status).toBe('pending'));
 
-    const nextRetryAtValues = new Set(deliveries.map((d) => d.next_retry_at));
+    const nextRetryAtValues = new Set(results.map((r) => r.delivery.next_retry_at));
     expect(nextRetryAtValues.size).toBeGreaterThan(1);
   });
 });
@@ -315,12 +379,13 @@ describe('delivery payload persistence', () => {
     await createWebhook();
     mockAxiosPost.mockResolvedValueOnce({ status: 500 });
 
-    const [delivery] = await dispatcher.dispatch({
+    const results = await dispatcher.dispatch({
       event_type: 'pool.assets_locked',
       event_id: 'evt_payload',
       data: { important: 'value' },
     });
 
+    const [{ delivery }] = results;
     const persisted = await deliveryRepo.findById(delivery.id);
     expect(persisted.payload.data.important).toBe('value');
 

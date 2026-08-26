@@ -3,6 +3,7 @@
 const axios = require('axios');
 const config = require('../config');
 const logger = require('../logger');
+const cache = require('./cache');
 const signature = require('./webhookSignature');
 const events = require('./webhookEvents');
 const webhookRepo = require('../repositories/webhookRepository');
@@ -188,16 +189,30 @@ async function dispatch({ event_type: eventType, event_id: eventId, data }) {
   const targets = await webhookRepo.listActiveForEvent(eventType, events.matchesSubscription);
   if (targets.length === 0) return [];
 
+  const resourceId = data?.pool_id || data?.asset || eventType;
+  const redis = cache.getClient();
+  const sequence = await redis.incr(`seq:${resourceId}`);
+
   const occurredAt = new Date().toISOString();
   const payload = {
     event: eventType,
     event_id: eventId,
     occurred_at: occurredAt,
+    sequence,
     data: data || {},
   };
 
-  return Promise.all(
+  return Promise.allSettled(
     targets.map((webhook) => deliverToWebhook(webhook, eventType, eventId, payload))
+  ).then((results) =>
+    results.map((result, i) => {
+      const webhook_id = targets[i].id;
+      if (result.status === 'fulfilled') {
+        return { webhook_id, delivery: result.value, error: null };
+      }
+      logger.error('Webhook delivery failed', { webhook_id, error: result.reason?.message || String(result.reason) });
+      return { webhook_id, delivery: null, error: result.reason?.message || String(result.reason) };
+    })
   );
 }
 

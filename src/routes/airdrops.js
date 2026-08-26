@@ -20,6 +20,10 @@ const buildRateLimit = require('../middleware/rateLimit');
 const { StrKey } = require('stellar-sdk');
 const { paginateResponse } = require('../utils/paginate');
 
+// Stellar Int64 max in stroops (1 unit = 10_000_000 stroops for XLM/USDC)
+const INT64_MAX_STROOPS = 9223372036854775807n;
+const STROOPS_PER_UNIT = 10_000_000n;
+
 const router = express.Router();
 const CSV_PARSE_CHUNK_BYTES = 64 * 1024;
 const upload = multer({
@@ -76,6 +80,16 @@ function isValidStellarAddress(address) {
   }
 }
 
+function toStroops(amount) {
+  return BigInt(Math.round(amount * Number(STROOPS_PER_UNIT)));
+}
+
+function assertWithinCeiling(stroops, label) {
+  if (stroops > INT64_MAX_STROOPS) {
+    throw new AppError('VALIDATION_ERROR', `${label} exceeds Stellar Int64 ceiling`, 400);
+  }
+}
+
 function parseRecipients(recipients, next) {
   const result = recipientsSchema.safeParse(recipients);
   if (!result.success) {
@@ -104,7 +118,7 @@ async function parseCSV(buffer) {
 
       const address = data.address || data.Address || data.ADDRESS;
       const amount = parseFloat(data.amount || data.Amount || data.AMOUNT);
-      if (address && !Number.isNaN(amount)) {
+      if (address && Number.isFinite(amount) && amount > 0) {
         results.push({ address, amount });
       }
     }
@@ -209,7 +223,7 @@ router.post('/airdrops/:id/recipients', validateRouteIdParams, addRecipientsLimi
     }
 
     const recipientSet = new Set();
-    let sum = 0;
+    let sum = 0n;
     for (let i = 0; i < recipients.length; i++) {
       const r = recipients[i];
       if (!r.address || !isValidStellarAddress(r.address)) {
@@ -219,11 +233,14 @@ router.post('/airdrops/:id/recipients', validateRouteIdParams, addRecipientsLimi
         return next(new AppError('VALIDATION_ERROR', `recipient ${i}: duplicate address ${r.address}`, 400));
       }
       recipientSet.add(r.address);
-      if (typeof r.amount !== 'number' || r.amount <= 0) {
+      if (typeof r.amount !== 'number' || r.amount <= 0 || !Number.isFinite(r.amount)) {
         return next(new AppError('VALIDATION_ERROR', `recipient ${i}: amount must be a positive number`, 400));
       }
-      sum += r.amount;
+      const stroops = toStroops(r.amount);
+      assertWithinCeiling(stroops, `recipient ${i} amount`);
+      sum += stroops;
     }
+    assertWithinCeiling(sum, 'total recipient amount');
 
     await airdropsService.addRecipients(req.params.id, recipients);
     return res.status(201).json({ added: recipients.length });
