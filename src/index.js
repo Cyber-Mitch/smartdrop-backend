@@ -221,6 +221,31 @@ if (require.main === module) {
 
   process.on('SIGTERM', shutdown('SIGTERM'));
   process.on('SIGINT', shutdown('SIGINT'));
+
+  // Last-resort safety net for errors that escape all per-job try/catch blocks.
+  // These handlers do not replace the existing error handling in priceRefresh.js,
+  // webhookRetryWorker.js, etc. — they are a fallback for truly unexpected throws.
+
+  // unhandledRejection: Node >=20 exits by default; we match that behavior but
+  // run the cleanup sequence first so Redis connections and in-flight jobs are
+  // shut down cleanly rather than abandoned abruptly.
+  process.on('unhandledRejection', (reason) => {
+    logger.error('Unhandled promise rejection — initiating graceful shutdown', {
+      reason: reason instanceof Error ? reason.message : String(reason),
+      stack: reason instanceof Error ? reason.stack : undefined,
+    });
+    shutdown('unhandledRejection')();
+  });
+
+  // uncaughtException: the process heap is in an undefined state after this event.
+  // Log and shut down; never swallow and continue running in a potentially corrupt state.
+  process.on('uncaughtException', (err) => {
+    logger.error('Uncaught exception — initiating graceful shutdown', {
+      error: err.message,
+      stack: err.stack,
+    });
+    shutdown('uncaughtException')();
+  });
 }
 
 module.exports = {
