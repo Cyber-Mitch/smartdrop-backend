@@ -145,8 +145,10 @@ class EventPoller {
   start() {
     if (this.timer || !this.enabled) return;
     if (!this.contractId) {
-      this.logger.warn('SmartDrop indexer disabled: SMARTDROP_CONTRACT_ID is not configured');
-      return;
+      // Issue #217: fail fast — starting the indexer with no contract to
+      // watch means every poll silently does nothing, which is a much
+      // easier misconfiguration to miss than an explicit startup error.
+      throw new Error('Cannot start SmartDrop indexer: SMARTDROP_CONTRACT_ID is not configured');
     }
 
     const run = async () => {
