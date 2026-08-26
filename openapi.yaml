@@ -5,6 +5,8 @@ info:
     SmartDrop backend services — price oracle, webhook delivery, health monitoring, and indexing.
 
     This specification covers all current REST endpoints and planned future endpoints.
+    The public HTTP API is versioned by URL path under `/api/v1`; breaking
+    changes are introduced in a new versioned path rather than in place.
   version: 0.1.0
   license:
     name: MIT
@@ -453,13 +455,12 @@ paths:
   /api/v1/indexer/status:
     get:
       operationId: getIndexerStatus
-      summary: Indexer service status (planned)
+      summary: Indexer service status
       description: |
-        **⚠️ Planned — not yet implemented.**
         Returns the current status and ledger height of the on-chain indexer service.
+        This endpoint is rate limited to 1 request per second per IP.
       tags:
         - Indexer
-      x-draft: true
       responses:
         '200':
           description: Indexer status
@@ -495,6 +496,8 @@ paths:
               example:
                 error: Indexer unavailable
                 message: Indexer service is not responding
+        '429':
+          $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/InternalError'
 

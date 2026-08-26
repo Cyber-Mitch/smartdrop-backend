@@ -2,6 +2,7 @@ const express = require('express');
 const eventStore = require('../indexer/eventStore');
 const indexerPoller = require('../indexer/runtime');
 const logger = require('../logger');
+const buildRateLimit = require('../middleware/rateLimit');
 const { parsePagination, paginateResponse } = require('../utils/paginate');
 
 const router = express.Router();
@@ -77,7 +78,13 @@ router.get('/recipients/:address/claims', async (req, res) => {
   }
 });
 
-router.get('/indexer/status', async (_req, res) => {
+const indexerStatusLimit = buildRateLimit({
+  windowSeconds: 1,
+  max: 1,
+  keyPrefix: 'indexer-status',
+});
+
+router.get('/indexer/status', indexerStatusLimit, async (_req, res) => {
   try {
     const stats = await eventStore.getStats();
     const poller = indexerPoller.getStatus();
