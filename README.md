@@ -4,6 +4,15 @@
 
 HTTP APIs, webhooks, and **indexing** for SmartDrop. This repository contains Node.js services that talk to **Horizon**, **Soroban RPC**, and external APIs.
 
+## API Versioning
+
+The public HTTP API uses path-based versioning under `/api/v1`.
+
+- Backward-compatible additions stay in the existing version.
+- Breaking changes ship under a new path, such as `/api/v2`.
+- Deprecated endpoints should include deprecation guidance in the changelog and OpenAPI docs, and may add `Deprecation` / `Sunset` headers when an endpoint is scheduled for removal.
+- Consumers should treat `/api/v1` as stable until a newer version is explicitly documented.
+
 ## Related repositories
 
 | Repository | Role |
@@ -65,6 +74,7 @@ Registers subscriber endpoints for SmartDrop lifecycle events and delivers signe
 - Timestamped HMAC-SHA256 request signatures
 - At-least-once delivery attempts with exponential backoff
 - Delivery logs with response code, error, duration, and attempt count
+- Delivery records expire after 30 days to keep Redis usage bounded
 - Dead-letter storage after retry exhaustion
 
 ### Airdrop Lifecycle & On-Chain Status
