@@ -52,6 +52,10 @@ jobs:
             - name: Lint OpenAPI spec
               run: npx @redocly/cli lint openapi.yaml
 
+            - name: Lint source (ESLint)
+              run: npx eslint .
+              continue-on-error: true
+
             - name: Run tests
               run: npm test
 

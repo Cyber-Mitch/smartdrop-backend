@@ -25,7 +25,8 @@ function errorHandler(err, req, res, _next) {
     message = 'Request body is too large';
   } else if (err.status || err.statusCode) {
     status = err.status || err.statusCode;
-    code = 'FORBIDDEN';
+    const STATUS_CODES = { 400: 'VALIDATION_ERROR', 401: 'UNAUTHORIZED', 403: 'FORBIDDEN', 404: 'NOT_FOUND', 429: 'RATE_LIMITED' };
+    code = STATUS_CODES[status] || 'INTERNAL_ERROR';
     message = err.message || 'Request rejected';
   }
 
