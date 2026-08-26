@@ -2,6 +2,7 @@
 
 const { z } = require('zod');
 const webhookEvents = require('../services/webhookEvents');
+const config = require('../config');
 
 const stellarPublicKeySchema = z
   .string()
@@ -99,7 +100,10 @@ const keyCreateBodySchema = z.object({
 });
 
 const alertCreateBodySchema = z.object({
-  asset: assetCodeSchema,
+  asset: assetCodeSchema.refine(
+    (code) => config.watchedAssets.length === 0 || config.watchedAssets.includes(code),
+    { message: 'Asset code is not in the list of watched Stellar assets' },
+  ),
   type: z.enum(['above', 'below', 'change_pct']),
   threshold_usd: z.number().positive(),
   webhook_url: httpUrlSchema,

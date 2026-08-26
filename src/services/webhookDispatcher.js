@@ -89,10 +89,10 @@ function withDeliveryTrace(traceId, fn) {
   return requestContext.run({ requestId: traceId }, fn);
 }
 
-async function postOnce(url, headers, body) {
+async function postOnce(url, headers, body, timeoutMs) {
   return axios.post(url, body, {
     headers,
-    timeout: config.webhooks.timeoutMs,
+    timeout: timeoutMs ?? config.webhooks.timeoutMs,
     transformRequest: [(data) => data],
     validateStatus: () => true,
   });
@@ -136,7 +136,7 @@ async function attempt(deliveryId) {
     let networkError = null;
 
     try {
-      const res = await postOnce(webhook.url, headers, body);
+      const res = await postOnce(webhook.url, headers, body, webhook.timeoutMs);
       responseStatus = res.status;
     } catch (err) {
       networkError = err.message || 'network error';
