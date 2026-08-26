@@ -67,6 +67,22 @@ Registers subscriber endpoints for SmartDrop lifecycle events and delivers signe
 - Delivery logs with response code, error, duration, and attempt count
 - Dead-letter storage after retry exhaustion
 
+### Airdrop Lifecycle & On-Chain Status
+
+**Important:** `POST /api/v1/airdrops` creates an off-chain bookkeeping record
+only — it does **not** submit any transaction to the Stellar network. The
+Soroban contract that actually executes airdrops lives in a separate repository
+(`smartdrop-contracts`). Once the on-chain airdrop ID is known, populate the
+`contract_airdrop_id` field via `PATCH /api/v1/airdrops/:id` to link the REST
+record with indexer-observed on-chain state.
+
+The indexer (`src/indexer/eventStore.js`) independently tracks on-chain
+airdrop events (`airdrop_created`, `recipient_added`, `token_claimed`,
+`airdrop_expired`) keyed by the contract's own airdrop ID. Until the linking
+field is set, the REST-managed airdrop and the indexer's view are
+un correlated — `GET /airdrops/:id/recipients` reflects only the
+originally-submitted intent and does **not** reflect on-chain claim status.
+
 ### Airdrop Expiry Reconciliation
 
 Airdrops carry an `expiry_ledger`, validated as being in the future only at
@@ -490,15 +506,22 @@ Register endpoints that receive HTTP POST callbacks when SmartDrop indexes farmi
 
 ### Supported event types
 
-| Event | Description |
-|-------|-------------|
-| `pool.created` | A new farming pool was created on-chain |
-| `pool.assets_locked` | Assets were locked into a pool |
-| `pool.assets_unlocked` | Assets were unlocked from a pool |
-| `pool.rewards_distributed` | Pool distributed rewards to participants |
-| `pool.closed` | Pool was closed |
-| `price.alert` | Existing price-alert event |
-| `*` | Wildcard — subscribe to every known event |
+| Event | Description | Wired up? |
+|-------|-------------|-----------|
+| `pool.created` | A new farming pool was created on-chain | No — registered event type, no dispatch path yet |
+| `pool.assets_locked` | Assets were locked into a pool | No — registered event type, no dispatch path yet |
+| `pool.assets_unlocked` | Assets were unlocked from a pool | No — registered event type, no dispatch path yet |
+| `pool.rewards_distributed` | Pool distributed rewards to participants | No — registered event type, no dispatch path yet |
+| `pool.closed` | Pool was closed | No — registered event type, no dispatch path yet |
+| `airdrop.failed` | An airdrop has failed or expired | **Yes** — dispatched by `airdropExpiry.js` on expiry |
+| `price.alert` | Existing price-alert event | **Yes** — dispatched by `alertsService` |
+| `*` | Wildcard — subscribe to every known event | Only matches events with an active dispatch path |
+
+> **Note:** `airdrop.created`, `airdrop.executing`, `airdrop.completed`, and
+> `recipient.claimed` are defined as valid event types in `webhookEvents.js` but
+> have no active dispatch path yet — only `airdrop.failed` is dispatched today.
+> Support for the remaining airdrop lifecycle events will be added as a separate
+> feature on top of the live webhook dispatcher.
 
 ### API
 

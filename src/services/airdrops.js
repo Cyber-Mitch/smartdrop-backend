@@ -48,7 +48,7 @@ async function getCurrentLedger() {
 }
 
 async function create(data) {
-  const { name, description, asset, asset_issuer, total_amount, expiry_ledger, recipients = [] } = data;
+  const { name, description, asset, asset_issuer, total_amount, expiry_ledger, contract_airdrop_id, recipients = [] } = data;
   const id = generateId();
 
   const airdrop = {
@@ -59,6 +59,10 @@ async function create(data) {
     asset_issuer,
     total_amount,
     expiry_ledger,
+    // Linking field: once the on-chain airdrop ID is known (e.g. after the
+    // Soroban contract is invoked externally), populate this so the REST
+    // record can be correlated with indexer-observed on-chain state (#122).
+    contract_airdrop_id: contract_airdrop_id || null,
     status: 'draft',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -163,12 +167,13 @@ async function update(id, data) {
   const airdrop = await get(id);
   if (!airdrop) return null;
 
-  const { name, description, expiry_ledger } = data;
+  const { name, description, expiry_ledger, contract_airdrop_id } = data;
   const updated = {
     ...airdrop,
     name: name !== undefined ? name : airdrop.name,
     description: description !== undefined ? description : airdrop.description,
     expiry_ledger: expiry_ledger !== undefined ? expiry_ledger : airdrop.expiry_ledger,
+    contract_airdrop_id: contract_airdrop_id !== undefined ? contract_airdrop_id : airdrop.contract_airdrop_id,
     updated_at: new Date().toISOString(),
   };
 
