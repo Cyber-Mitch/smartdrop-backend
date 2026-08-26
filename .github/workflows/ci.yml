@@ -41,6 +41,11 @@ jobs:
                   node-version: 20
                   cache: npm
 
+            - name: Validate manifest and source files parse
+              run: |
+                  node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
+                  find src -name '*.js' -exec node -c {} +
+
             - name: Install dependencies
               run: npm ci
 
