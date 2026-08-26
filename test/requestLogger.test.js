@@ -62,4 +62,54 @@ describe('requestLogger middleware', () => {
     expect(meta.path).toBe('/query');
     expect(JSON.stringify(meta)).not.toContain('super-secret-value');
   });
+
+  describe('slow request warning (#244)', () => {
+    test('does not log a slow-request warning for a fast request', async () => {
+      const app = buildApp();
+      await request(app).get('/ok');
+
+      const slowCall = logger.warn.mock.calls.find(([message]) => message === 'Slow request detected');
+      expect(slowCall).toBeUndefined();
+    });
+
+    test('logs a distinct "Slow request detected" warning when duration exceeds the threshold', async () => {
+      const hrtimeBigintSpy = jest.spyOn(process.hrtime, 'bigint');
+      // First call is the middleware's startedAt, second is at res.on('finish') —
+      // 1.5s apart in nanoseconds, well past the default 1000ms threshold.
+      hrtimeBigintSpy.mockReturnValueOnce(0n).mockReturnValueOnce(1_500_000_000n);
+
+      const app = buildApp();
+      await request(app).get('/ok');
+
+      hrtimeBigintSpy.mockRestore();
+
+      const slowCall = logger.warn.mock.calls.find(([message]) => message === 'Slow request detected');
+      expect(slowCall).toBeDefined();
+      expect(slowCall[1]).toMatchObject({
+        method: 'GET',
+        path: '/ok',
+        statusCode: 200,
+        thresholdMs: 1000,
+      });
+      expect(slowCall[1].durationMs).toBeCloseTo(1500, 0);
+
+      // The routine per-request log line still fires as normal, unaffected.
+      expect(logger.info).toHaveBeenCalledTimes(1);
+    });
+
+    test('a slow request that also errors logs both the routine error line and the slow warning', async () => {
+      const hrtimeBigintSpy = jest.spyOn(process.hrtime, 'bigint');
+      hrtimeBigintSpy.mockReturnValueOnce(0n).mockReturnValueOnce(2_000_000_000n);
+
+      const app = buildApp();
+      await request(app).get('/server-error');
+
+      hrtimeBigintSpy.mockRestore();
+
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      const slowCall = logger.warn.mock.calls.find(([message]) => message === 'Slow request detected');
+      expect(slowCall).toBeDefined();
+      expect(slowCall[1].statusCode).toBe(500);
+    });
+  });
 });

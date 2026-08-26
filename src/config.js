@@ -109,6 +109,10 @@ const env = cleanEnv(rawEnv, {
     default: 'info',
     choices: ['debug', 'info', 'warn', 'error'],
   }),
+  // Requests slower than this get a distinct warn-level log line from
+  // requestLogger.js, in addition to the routine per-request log (issue
+  // #244) — so slow requests are greppable/alertable without external APM.
+  SLOW_REQUEST_THRESHOLD_MS: num({ default: 1000 }),
 });
 
 const usdcIssuer = env.USDC_ISSUER;
@@ -199,6 +203,7 @@ module.exports = {
     adminApiKey: env.ADMIN_API_KEY,
   },
   sentryDsn: env.SENTRY_DSN,
+  slowRequestThresholdMs: env.SLOW_REQUEST_THRESHOLD_MS,
   webhookSecretEncryptionKey: env.WEBHOOK_SECRET_ENCRYPTION_KEY,
   corsAllowedOrigins: (process.env.CORS_ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:3001')
     .split(',')
