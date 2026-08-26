@@ -69,7 +69,7 @@ async function create(data) {
   await redis.zadd(IDS_KEY, Date.now(), id);
 
   if (recipients.length > 0) {
-    await redis.lpush(recipientsKey(id), ...recipients.map((r) => JSON.stringify(r)));
+    await redis.rpush(recipientsKey(id), ...recipients.map((r) => JSON.stringify(r)));
     await redis.sadd(recipientAddressSetKey(id), ...recipients.map((r) => r.address));
   }
 
