@@ -53,6 +53,101 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/v1/keys:
+    get:
+      operationId: listApiKeys
+      summary: List API keys
+      description: Returns sanitized API key metadata. Secret key material and key hashes are never returned.
+      tags:
+        - API Keys
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Existing API keys
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyListResponse'
+              example:
+                keys:
+                  - id: key_1234567890abcdef
+                    label: Production webhook worker
+                    key_prefix: 3b28a419
+                    scopes:
+                      - webhooks:write
+                    created_at: '2026-06-27T12:00:00.000Z'
+                    last_used_at: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: createApiKey
+      summary: Create API key
+      description: Creates a new API key and returns the plaintext secret once. Store it securely; subsequent responses only include metadata.
+      tags:
+        - API Keys
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiKeyCreateRequest'
+            example:
+              label: Production webhook worker
+              scopes:
+                - webhooks:write
+      responses:
+        '201':
+          description: API key created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyCreateResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/keys/{id}:
+    delete:
+      operationId: revokeApiKey
+      summary: Revoke API key
+      description: Revokes an API key by ID and returns the sanitized record that was removed.
+      tags:
+        - API Keys
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^key_
+          description: API key ID
+          example: key_1234567890abcdef
+      responses:
+        '200':
+          description: API key revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyRevokeResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /api/v1/prices/{asset_code}:
     get:
       operationId: getAssetPrice
@@ -1327,6 +1422,95 @@ components:
       required:
         - error
         - message
+
+    ApiKey:
+      type: object
+      properties:
+        id:
+          type: string
+          pattern: ^key_
+          example: key_1234567890abcdef
+        label:
+          type: string
+          example: Production webhook worker
+        key_prefix:
+          type: string
+          description: First eight characters of the generated API key for display only
+          example: 3b28a419
+        scopes:
+          type: array
+          items:
+            type: string
+          example:
+            - webhooks:write
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+        - id
+        - label
+        - key_prefix
+        - scopes
+        - created_at
+        - last_used_at
+
+    ApiKeyCreateRequest:
+      type: object
+      properties:
+        label:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: Production webhook worker
+        scopes:
+          type: array
+          items:
+            type: string
+          default:
+            - default
+          example:
+            - webhooks:write
+      required:
+        - label
+
+    ApiKeyCreateResponse:
+      type: object
+      properties:
+        api_key:
+          type: string
+          description: Plaintext API key secret. Returned only once at creation time.
+          example: 7a75e39a0fb34c0c90b2343f61b557aa7f0fd965baf0e5a97d30c384d83d1d75
+        key:
+          $ref: '#/components/schemas/ApiKey'
+      required:
+        - api_key
+        - key
+
+    ApiKeyListResponse:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiKey'
+      required:
+        - keys
+
+    ApiKeyRevokeResponse:
+      type: object
+      properties:
+        deleted:
+          type: boolean
+          example: true
+        key:
+          $ref: '#/components/schemas/ApiKey'
+      required:
+        - deleted
+        - key
 
     ValidationErrorDetail:
       type: object

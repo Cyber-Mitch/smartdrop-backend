@@ -23,9 +23,24 @@ describe('OpenAPI specification', () => {
     expect(content).toContain('/api/v1/prices/{asset_code}');
     expect(content).toContain('/api/v1/prices/batch');
     expect(content).toContain('/api/v1/webhooks');
+    expect(content).toContain('/api/v1/keys');
+    expect(content).toContain('/api/v1/keys/{id}');
     expect(content).toContain('/api/v1/indexer/status');
     expect(content).toContain('/ws');
     expect(content).toContain('x-draft: true');
+  });
+
+  test('spec documents key management schemas and operations', () => {
+    const specPath = path.join(__dirname, '..', 'openapi.yaml');
+    const content = fs.readFileSync(specPath, 'utf8');
+
+    expect(content).toContain('operationId: listApiKeys');
+    expect(content).toContain('operationId: createApiKey');
+    expect(content).toContain('operationId: revokeApiKey');
+    expect(content).toContain('ApiKeyCreateRequest');
+    expect(content).toContain('ApiKeyCreateResponse');
+    expect(content).toContain('ApiKeyListResponse');
+    expect(content).toContain('ApiKeyRevokeResponse');
   });
 
   test('spec includes Bearer security scheme', () => {

@@ -196,6 +196,28 @@ describe('dispatcher retry semantics', () => {
     expect([...queued.keys()][0]).toBe(delivery.id);
   });
 
+  test('retry scheduling uses the backoff delay from the current attempt count', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    const randomSpy = jest.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      await createWebhook();
+      mockAxiosPost.mockResolvedValueOnce({ status: 503 });
+
+      const results = await dispatcher.dispatch({
+        event_type: 'pool.assets_locked',
+        event_id: 'evt_backoff_schedule',
+      });
+
+      const [{ delivery }] = results;
+      const expectedRetryAt = 1_700_000_000_000 + 15_000;
+      expect(delivery.next_retry_at).toBe(new Date(expectedRetryAt).toISOString());
+      expect(zsets.get('webhooks:retries').get(delivery.id)).toBe(expectedRetryAt);
+    } finally {
+      Date.now.mockRestore();
+      randomSpy.mockRestore();
+    }
+  });
+
   test('4xx (non-429) does NOT retry and marks failed', async () => {
     await createWebhook();
     mockAxiosPost.mockResolvedValueOnce({ status: 400 });
