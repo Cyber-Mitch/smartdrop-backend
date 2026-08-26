@@ -80,6 +80,10 @@ const env = cleanEnv(rawEnv, {
   LEASE_TTL_MS: positiveInteger({ default: 15000 }),
   LEASE_RENEW_INTERVAL_MS: positiveInteger({ default: 5000 }),
   ADMIN_API_KEY: str({ default: '' }),
+  // 32-byte AES-256 key for encrypting webhook secrets at rest (issue #145),
+  // hex or base64 encoded. Empty in dev — webhookEncryption falls back to an
+  // insecure fixed key and logs a warning; production must set this.
+  WEBHOOK_SECRET_ENCRYPTION_KEY: str({ default: '' }),
   AIRDROP_CSV_MAX_BYTES: positiveInteger({ default: 5 * 1024 * 1024 }),
   AIRDROP_JSON_MAX_BYTES: positiveInteger({ default: 2 * 1024 * 1024 }),
   AIRDROP_RATELIMIT_WINDOW: positiveInteger({ default: 60 }),
@@ -193,6 +197,7 @@ module.exports = {
   auth: {
     adminApiKey: env.ADMIN_API_KEY,
   },
+  webhookSecretEncryptionKey: env.WEBHOOK_SECRET_ENCRYPTION_KEY,
   corsAllowedOrigins: (process.env.CORS_ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:3001')
     .split(',')
     .map((o) => o.trim())

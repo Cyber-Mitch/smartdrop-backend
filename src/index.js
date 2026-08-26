@@ -15,6 +15,7 @@ const { warmCache } = require('./startup/cacheWarm');
 const buildCorsMiddleware = require('./middleware/cors');
 const buildRateLimit = require('./middleware/rateLimit');
 const { requestIdMiddleware } = require('./middleware/requestId');
+const requestLoggerMiddleware = require('./middleware/requestLogger');
 const { requireApiKey } = require('./middleware/auth');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const pricesRouter = require('./routes/prices');
@@ -65,6 +66,7 @@ let server = {
 };
 
 app.use(requestIdMiddleware);
+app.use(requestLoggerMiddleware);
 app.use(requestMetricsMiddleware);
 app.use(helmet());
 app.use(buildCorsMiddleware(config.corsAllowedOrigins));
