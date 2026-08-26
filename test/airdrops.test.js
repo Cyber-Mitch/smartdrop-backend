@@ -435,6 +435,29 @@ describe('POST /api/v1/airdrops/:id/recipients', () => {
     expect(mockRedis.rpush).not.toHaveBeenCalled();
   });
 
+  test('rejects a CSV file with non-UTF-8 encoding', async () => {
+    const createResponse = await request(app)
+      .post('/api/v1/airdrops')
+      .send({
+        name: 'Test Airdrop',
+        asset: 'USDC',
+        asset_issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335AX2OBFLDTQLNUEHRGPTM6RIA',
+        total_amount: 100,
+        expiry_ledger: 123456,
+      });
+
+    const invalidUtf8Buffer = Buffer.from([0x61, 0x64, 0x64, 0x72, 0x65, 0x73, 0x73, 0x2c, 0x61, 0x6d, 0x6f, 0x75, 0x6e, 0x74, 0x0a, 0xa0, 0xa1, 0xc0]);
+    const response = await request(app)
+      .post(`/api/v1/airdrops/${createResponse.body.id}/recipients`)
+      .attach('file', invalidUtf8Buffer, 'recipients.csv');
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'VALIDATION_ERROR',
+      message: expect.stringContaining('UTF-8'),
+    });
+  });
+
   test('rate limits repeated recipient additions', async () => {
     const createResponse = await request(app)
       .post('/api/v1/airdrops')

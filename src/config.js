@@ -104,6 +104,7 @@ const env = cleanEnv(rawEnv, {
   AIRDROP_LEDGER_CACHE_TTL_MS: num({ default: 5000 }),
   AIRDROP_EXPIRY_SCAN_BATCH_SIZE: num({ default: 100 }),
   WATCHED_ASSETS: watchedAssets({ default: '' }),
+  SENTRY_DSN: str({ default: '' }),
   LOG_LEVEL: str({
     default: 'info',
     choices: ['debug', 'info', 'warn', 'error'],
@@ -197,6 +198,7 @@ module.exports = {
   auth: {
     adminApiKey: env.ADMIN_API_KEY,
   },
+  sentryDsn: env.SENTRY_DSN,
   webhookSecretEncryptionKey: env.WEBHOOK_SECRET_ENCRYPTION_KEY,
   corsAllowedOrigins: (process.env.CORS_ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:3001')
     .split(',')
