@@ -108,10 +108,27 @@ const alertCreateBodySchema = z.object({
 });
 
 const webhookSubscriptionSchema = z
-  .array(z.string())
+  .array(z.string().trim())
   .nonempty()
   .refine((value) => webhookEvents.isValidSubscription(value), {
-    message: `Must contain ${webhookEvents.WILDCARD} or known events`,
+    message: `Must contain ${webhookEvents.WILDCARD} alone or at most ${webhookEvents.MAX_EXPLICIT_SUBSCRIPTIONS} known events`,
+  });
+
+const webhookFiltersSchema = z
+  .object({
+    asset: z
+      .string()
+      .trim()
+      .min(1)
+      .max(12)
+      .regex(/^[A-Za-z0-9]+$/, 'Asset filter must be alphanumeric')
+      .transform((value) => value.toUpperCase())
+      .optional(),
+    pool_id: z.string().trim().min(1).max(128).optional(),
+  })
+  .strict()
+  .refine((value) => value.asset !== undefined || value.pool_id !== undefined, {
+    message: 'At least one filter must be provided',
   });
 
 const webhookCreateBodySchema = z.object({
@@ -119,6 +136,7 @@ const webhookCreateBodySchema = z.object({
   events: webhookSubscriptionSchema,
   secret: z.string().min(16).optional(),
   description: z.string().optional(),
+  filters: webhookFiltersSchema.optional(),
 });
 
 const webhookPatchBodySchema = z.object({
@@ -127,10 +145,12 @@ const webhookPatchBodySchema = z.object({
   secret: z.string().min(16).optional(),
   active: z.boolean().optional(),
   description: z.string().optional(),
+  filters: webhookFiltersSchema.optional(),
 });
 
 const webhookDeliveriesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
+  status: z.enum(['pending', 'success', 'failed']).optional(),
 });
 
 // Stellar Int64 max in stroops, divided by 10_000_000 to get max in whole units

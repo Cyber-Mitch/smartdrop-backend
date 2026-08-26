@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const axios = require('axios');
 const config = require('../config');
 const logger = require('../logger');
@@ -8,6 +9,7 @@ const signature = require('./webhookSignature');
 const events = require('./webhookEvents');
 const webhookRepo = require('../repositories/webhookRepository');
 const deliveryRepo = require('../repositories/deliveryRepository');
+const { requestContext } = require('../middleware/requestId');
 
 const USER_AGENT = 'SmartDrop-Webhooks/1.0';
 
@@ -59,6 +61,34 @@ function buildHeaders(secret, body, eventType, deliveryId) {
   };
 }
 
+function generateDeliveryTraceId() {
+  return `trace_${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
+}
+
+function matchesWebhookFilters(filters, data) {
+  if (!filters) return true;
+  if (!data || typeof data !== 'object') return false;
+
+  if (filters.asset !== undefined) {
+    const asset = typeof data.asset === 'string' ? data.asset.toUpperCase() : null;
+    if (asset !== filters.asset) return false;
+  }
+
+  if (filters.pool_id !== undefined && data.pool_id !== filters.pool_id) {
+    return false;
+  }
+
+  return true;
+}
+
+function withDeliveryTrace(traceId, fn) {
+  const currentRequestId = requestContext.getStore()?.requestId;
+  if (currentRequestId && currentRequestId !== 'system') {
+    return fn();
+  }
+  return requestContext.run({ requestId: traceId }, fn);
+}
+
 async function postOnce(url, headers, body) {
   return axios.post(url, body, {
     headers,
@@ -76,94 +106,104 @@ async function attempt(deliveryId) {
   }
   if (delivery.status === 'success') return delivery;
 
-  const webhook = await webhookRepo.findById(delivery.webhook_id);
-  if (!webhook || !webhook.active) {
-    return deliveryRepo.update(deliveryId, {
-      status: 'failed',
-      last_error: 'webhook missing or inactive',
-      last_attempt_at: new Date().toISOString(),
-      next_retry_at: null,
-    });
+  const traceId = delivery.trace_id || generateDeliveryTraceId();
+  if (!delivery.trace_id) {
+    await deliveryRepo.update(deliveryId, { trace_id: traceId });
   }
 
-  const payload = delivery.payload || {
-    event: delivery.event_type,
-    event_id: delivery.event_id,
-    delivery_id: delivery.id,
-    occurred_at: delivery.created_at,
-  };
-  const body = JSON.stringify(payload);
-  const headers = buildHeaders(webhook.secret, body, delivery.event_type, delivery.id);
+  return withDeliveryTrace(traceId, async () => {
+    const webhook = await webhookRepo.findById(delivery.webhook_id);
+    if (!webhook || !webhook.active) {
+      return deliveryRepo.update(deliveryId, {
+        status: 'failed',
+        last_error: 'webhook missing or inactive',
+        last_attempt_at: new Date().toISOString(),
+        next_retry_at: null,
+      });
+    }
 
-  const attempts = delivery.attempts + 1;
-  let responseStatus = null;
-  let networkError = null;
-
-  try {
-    const res = await postOnce(webhook.url, headers, body);
-    responseStatus = res.status;
-  } catch (err) {
-    networkError = err.message || 'network error';
-  }
-
-  const succeeded = responseStatus != null && responseStatus >= 200 && responseStatus < 300;
-  const nowIso = new Date().toISOString();
-
-  if (succeeded) {
-    logger.info('Webhook delivered', {
+    const payload = delivery.payload || {
+      event: delivery.event_type,
+      event_id: delivery.event_id,
       delivery_id: delivery.id,
-      webhook_id: webhook.id,
-      attempts,
-      status: responseStatus,
-    });
-    return deliveryRepo.update(deliveryId, {
-      status: 'success',
-      attempts,
-      last_attempt_at: nowIso,
-      next_retry_at: null,
-      last_error: null,
-      response_status: responseStatus,
-    });
-  }
+      occurred_at: delivery.created_at,
+    };
+    const body = JSON.stringify(payload);
+    const headers = buildHeaders(webhook.secret, body, delivery.event_type, delivery.id);
 
-  const errorMessage = networkError || `HTTP ${responseStatus}`;
-  const retryable = shouldRetry(responseStatus, Boolean(networkError));
-  const hasAttemptsLeft = attempts < config.webhooks.maxAttempts;
+    const attempts = delivery.attempts + 1;
+    let responseStatus = null;
+    let networkError = null;
 
-  if (retryable && hasAttemptsLeft) {
-    const delayMs = backoffMs(attempts);
-    const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
-    await deliveryRepo.scheduleRetry(delivery.id, Date.now() + delayMs);
-    logger.warn('Webhook delivery failed, retry scheduled', {
+    try {
+      const res = await postOnce(webhook.url, headers, body);
+      responseStatus = res.status;
+    } catch (err) {
+      networkError = err.message || 'network error';
+    }
+
+    const succeeded = responseStatus != null && responseStatus >= 200 && responseStatus < 300;
+    const nowIso = new Date().toISOString();
+
+    if (succeeded) {
+      logger.info('Webhook delivered', {
+        delivery_id: delivery.id,
+        trace_id: traceId,
+        webhook_id: webhook.id,
+        attempts,
+        status: responseStatus,
+      });
+      return deliveryRepo.update(deliveryId, {
+        status: 'success',
+        attempts,
+        last_attempt_at: nowIso,
+        next_retry_at: null,
+        last_error: null,
+        response_status: responseStatus,
+      });
+    }
+
+    const errorMessage = networkError || `HTTP ${responseStatus}`;
+    const retryable = shouldRetry(responseStatus, Boolean(networkError));
+    const hasAttemptsLeft = attempts < config.webhooks.maxAttempts;
+
+    if (retryable && hasAttemptsLeft) {
+      const delayMs = backoffMs(attempts);
+      const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
+      await deliveryRepo.scheduleRetry(delivery.id, Date.now() + delayMs);
+      logger.warn('Webhook delivery failed, retry scheduled', {
+        delivery_id: delivery.id,
+        trace_id: traceId,
+        webhook_id: webhook.id,
+        attempts,
+        error: errorMessage,
+        next_retry_at: nextRetryAt,
+      });
+      return deliveryRepo.update(deliveryId, {
+        status: 'pending',
+        attempts,
+        last_attempt_at: nowIso,
+        next_retry_at: nextRetryAt,
+        last_error: errorMessage,
+        response_status: responseStatus,
+      });
+    }
+
+    logger.error('Webhook delivery failed permanently', {
       delivery_id: delivery.id,
+      trace_id: traceId,
       webhook_id: webhook.id,
       attempts,
       error: errorMessage,
-      next_retry_at: nextRetryAt,
     });
     return deliveryRepo.update(deliveryId, {
-      status: 'pending',
+      status: 'failed',
       attempts,
       last_attempt_at: nowIso,
-      next_retry_at: nextRetryAt,
+      next_retry_at: null,
       last_error: errorMessage,
       response_status: responseStatus,
     });
-  }
-
-  logger.error('Webhook delivery failed permanently', {
-    delivery_id: delivery.id,
-    webhook_id: webhook.id,
-    attempts,
-    error: errorMessage,
-  });
-  return deliveryRepo.update(deliveryId, {
-    status: 'failed',
-    attempts,
-    last_attempt_at: nowIso,
-    next_retry_at: null,
-    last_error: errorMessage,
-    response_status: responseStatus,
   });
 }
 
@@ -194,7 +234,8 @@ async function dispatch({ event_type: eventType, event_id: eventId, data }) {
     return [];
   }
 
-  const targets = await webhookRepo.listActiveForEvent(eventType, events.matchesSubscription);
+  const targets = (await webhookRepo.listActiveForEvent(eventType, events.matchesSubscription))
+    .filter((webhook) => matchesWebhookFilters(webhook.filters, data));
   if (targets.length === 0) return [];
 
   const resourceId = data?.pool_id || data?.asset || eventType;

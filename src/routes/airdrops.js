@@ -100,7 +100,17 @@ function parseRecipients(recipients, next) {
   return result.data;
 }
 
+function validateUtf8(buffer) {
+  try {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    decoder.decode(buffer);
+  } catch {
+    throw new AppError('VALIDATION_ERROR', 'CSV file must be valid UTF-8 encoded', 400);
+  }
+}
+
 async function parseCSV(buffer) {
+  validateUtf8(buffer);
   const results = [];
   let rowCount = 0;
   const chunks = (function* chunkBuffer() {

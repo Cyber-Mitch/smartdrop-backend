@@ -56,12 +56,22 @@ const requestIdFormat = winston.format((info) => {
   return info;
 });
 
+const errorTrackerFormat = winston.format((info) => {
+  if (info.level === 'error') {
+    const errorObj = info.error instanceof Error ? info.error : (info.stack ? info : new Error(info.message || 'Logged Error'));
+    const { level, message, timestamp, ...extra } = info;
+    require('./services/errorTracker').captureException(errorObj, extra);
+  }
+  return info;
+});
+
 // ==================== BASE FORMATS ====================
 const baseFormats = [
   winston.format.timestamp({ format: () => new Date().toISOString() }),
   winston.format.errors({ stack: true }),
   requestIdFormat(),
   redactFormat(),
+  errorTrackerFormat(),
 ];
 
 // ==================== JSON FORMAT ====================

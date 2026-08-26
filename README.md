@@ -533,18 +533,20 @@ Content-Type: application/json
 {
   "url": "https://example.com/webhooks/smartdrop",
   "events": ["pool.assets_locked", "pool.rewards_distributed"],
+  "filters": { "pool_id": "pool_123" },   // optional
   "secret": "whsec_at_least_16_chars",     // optional, generated if omitted
   "description": "Production webhook"       // optional
 }
 ```
 
 The response includes the secret in plaintext **exactly once**. Subsequent reads only return `secret_preview`.
+Wildcard subscriptions are supported as `["*"]`, but explicit event lists are capped at 25 known events.
 
 #### Manage webhooks
 ```
 GET    /api/v1/webhooks               # list
 GET    /api/v1/webhooks/:id           # fetch one
-PATCH  /api/v1/webhooks/:id           # update url / events / active / description
+PATCH  /api/v1/webhooks/:id           # update url / events / filters / active / description
 DELETE /api/v1/webhooks/:id           # remove
 ```
 
@@ -557,8 +559,9 @@ Sends a synthetic `pool.assets_locked` payload to the registered URL and returns
 #### Inspect deliveries (admin dashboard feed)
 ```
 GET /api/v1/webhooks/:id/deliveries?limit=50
+GET /api/v1/webhooks/:id/deliveries?limit=50&status=failed
 ```
-Returns the most recent delivery records: `status` (`success | pending | failed`), `attempts`, `response_status`, `last_error`, `next_retry_at`.
+Returns the most recent delivery records: `status` (`success | pending | failed`), `attempts`, `response_status`, `last_error`, `next_retry_at`, and `trace_id`. Use `status=failed` to inspect dead-lettered deliveries.
 
 ### Outgoing request shape
 

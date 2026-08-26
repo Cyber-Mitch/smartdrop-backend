@@ -12,6 +12,7 @@
     "test": "jest"
   },
   "dependencies": {
+    "@sentry/node": "^10.71.0",
     "axios": "^1.7.0",
     "cors": "^2.8.5",
     "csv-parser": "^3.2.1",

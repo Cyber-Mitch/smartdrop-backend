@@ -78,6 +78,22 @@ describe('dispatcher event-type filtering', () => {
     expect(urls).toEqual(['https://a.com', 'https://c.com']);
   });
 
+  test('webhook filters narrow deliveries to matching pools', async () => {
+    await createWebhook({ url: 'https://a.com', events: ['pool.assets_locked'], filters: { pool_id: 'pool_1' } });
+    await createWebhook({ url: 'https://b.com', events: ['pool.assets_locked'], filters: { pool_id: 'pool_2' } });
+    mockAxiosPost.mockResolvedValue({ status: 200 });
+
+    const results = await dispatcher.dispatch({
+      event_type: 'pool.assets_locked',
+      event_id: 'evt_filtered',
+      data: { pool_id: 'pool_1', asset: 'USDC' },
+    });
+
+    expect(results).toHaveLength(1);
+    expect(mockAxiosPost).toHaveBeenCalledTimes(1);
+    expect(mockAxiosPost.mock.calls[0][0]).toBe('https://a.com');
+  });
+
   test('payload includes monotonically increasing sequence number', async () => {
     await createWebhook({ url: 'https://a.com', events: ['pool.assets_locked'] });
     mockAxiosPost.mockResolvedValue({ status: 200 });
@@ -394,5 +410,20 @@ describe('delivery payload persistence', () => {
     expect(retried.status).toBe('success');
     const body = JSON.parse(mockAxiosPost.mock.calls[1][1]);
     expect(body.data.important).toBe('value');
+  });
+});
+
+describe('delivery trace ids', () => {
+  test('persist a delivery trace id for background dispatches', async () => {
+    await createWebhook();
+    mockAxiosPost.mockResolvedValueOnce({ status: 500 });
+
+    const results = await dispatcher.dispatch({
+      event_type: 'pool.assets_locked',
+      event_id: 'evt_trace',
+    });
+
+    const [{ delivery }] = results;
+    expect(delivery.trace_id).toMatch(/^trace_/);
   });
 });

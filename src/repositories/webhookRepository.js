@@ -21,6 +21,7 @@
 const crypto = require('crypto');
 const cache = require('../services/cache');
 const logger = require('../logger');
+const { encryptSecret, decryptSecret, isEncrypted } = require('../services/webhookEncryption');
 
 const IDS_KEY = 'webhooks:ids';
 
@@ -32,32 +33,50 @@ function generateId() {
   return `wh_${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
 }
 
+/**
+ * Decrypts `record.secret` for callers (webhookDispatcher needs the
+ * plaintext to sign deliveries; routes/webhooks.js needs it for
+ * secret_preview). Records written before encryption was introduced store
+ * the secret in plaintext (`isEncrypted` returns false for those) and are
+ * passed through unchanged, so existing webhooks keep working — they're
+ * transparently encrypted the next time they're written via `update()`.
+ */
+function decryptRecordSecret(secret) {
+  if (!isEncrypted(secret)) return secret;
+  try {
+    return decryptSecret(secret);
+  } catch (err) {
+    logger.error('webhookRepository: failed to decrypt webhook secret', { error: err.message });
+    return null;
+  }
+}
+
 function normalize(record) {
   if (!record) return null;
   return {
     id: record.id,
     url: record.url,
     events: Array.isArray(record.events) ? [...record.events] : [],
-    secret: record.secret,
+    secret: decryptRecordSecret(record.secret),
     active: record.active !== false,
     description: record.description || null,
-    owner_ip: record.owner_ip || null,
+    filters: record.filters ? { ...record.filters } : null,
     created_at: record.created_at,
     updated_at: record.updated_at,
   };
 }
 
-async function create({ url, events, secret, description, owner_ip }) {
+async function create({ url, events, secret, description, filters }) {
   const id = generateId();
   const now = new Date().toISOString();
   const record = {
     id,
     url,
     events,
-    secret,
+    secret: encryptSecret(secret),
     active: true,
     description: description || null,
-    owner_ip: owner_ip || null,
+    filters: filters || null,
     created_at: now,
     updated_at: now,
   };
@@ -138,6 +157,10 @@ async function update(id, patch) {
   const next = {
     ...existing,
     ...patch,
+    // A patched secret arrives as plaintext (validated by webhookPatchBodySchema);
+    // re-encrypt it the same way create() does. Omit patch.secret entirely and
+    // this correctly falls through to the existing (already-encrypted) value.
+    ...(patch.secret ? { secret: encryptSecret(patch.secret) } : {}),
     id: existing.id,
     created_at: existing.created_at,
     updated_at: new Date().toISOString(),
