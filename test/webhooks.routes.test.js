@@ -1,5 +1,8 @@
 'use strict';
 
+process.env.WEBHOOK_RATELIMIT_MAX = '1000';
+process.env.WEBHOOK_RATELIMIT_WINDOW = '60';
+
 const express = require('express');
 const request = require('supertest');
 const { createCacheMock } = require('./helpers/cacheMock');
@@ -13,20 +16,32 @@ jest.mock('../src/logger', () => ({
 }));
 
 const mockAxiosPost = jest.fn();
-jest.mock('axios', () => ({ post: (...args) => mockAxiosPost(...args) }));
+const mockAxiosHead = jest.fn();
+const mockAxiosGet = jest.fn();
+jest.mock('axios', () => ({
+  post: (...args) => mockAxiosPost(...args),
+  head: (...args) => mockAxiosHead(...args),
+  get: (...args) => mockAxiosGet(...args),
+}));
 
 const webhooksRouter = require('../src/routes/webhooks');
+const { errorHandler } = require('../src/middleware/errorHandler');
 
 function buildApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/v1', webhooksRouter);
+  app.use(errorHandler);
   return app;
 }
 
 beforeEach(() => {
   reset();
   mockAxiosPost.mockReset();
+  mockAxiosHead.mockReset();
+  mockAxiosGet.mockReset();
+  mockAxiosHead.mockResolvedValue({ status: 200 });
+  mockAxiosGet.mockResolvedValue({ status: 200 });
 });
 
 describe('POST /api/v1/webhooks', () => {
@@ -74,6 +89,44 @@ describe('POST /api/v1/webhooks', () => {
       .post('/api/v1/webhooks')
       .send({ url: 'https://example.com/hook', events: ['*'], secret: 'short' });
     expect(res.status).toBe(400);
+  });
+
+  test('emits a warning when the target URL is unreachable at registration time', async () => {
+    mockAxiosHead.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    mockAxiosGet.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    const res = await request(app)
+      .post('/api/v1/webhooks')
+      .set('X-Forwarded-For', '203.0.113.10')
+      .send({
+        url: 'https://nonexistent.example.com/hook',
+        events: ['*'],
+        secret: 'whsec_unreachable_warning_secret',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.warning).toMatch(/unreachable/i);
+    expect(res.body.reachability).toBe('unreachable');
+  });
+
+  test('rejects creation once the per-IP webhook quota is exceeded', async () => {
+    const ip = '203.0.113.99';
+    for (let i = 0; i < 101; i += 1) {
+      const res = await request(app)
+        .post('/api/v1/webhooks')
+        .set('X-Forwarded-For', ip)
+        .send({
+          url: `https://example${i}.com/hook`,
+          events: ['*'],
+          secret: `whsec_${'a'.repeat(16)}_${i}`,
+        });
+      if (i < 100) {
+        expect(res.status).toBe(201);
+      } else {
+        expect(res.status).toBe(429);
+        expect(res.body.error.message).toMatch(/webhook limit/i);
+      }
+    }
   });
 });
 

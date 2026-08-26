@@ -7,6 +7,7 @@ const webhookRepo = require('../repositories/webhookRepository');
 const deliveryRepo = require('../repositories/deliveryRepository');
 const dispatcher = require('../services/webhookDispatcher');
 const signatureService = require('../services/webhookSignature');
+const { probeReachability } = require('../services/webhook');
 const buildRateLimit = require('../middleware/rateLimit');
 const AppError = require('../errors/AppError');
 const { paginateResponse } = require('../utils/paginate');
@@ -35,6 +36,17 @@ const testLimit = buildRateLimit({
   keyPrefix: 'webhooks_test',
 });
 
+function clientIpFromRequest(req) {
+  const forwardedFor = req.headers['x-forwarded-for'];
+  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
+    return forwardedFor.split(',')[0].trim().replace(/^::ffff:/, '');
+  }
+  if (Array.isArray(forwardedFor) && forwardedFor[0]) {
+    return String(forwardedFor[0]).trim().replace(/^::ffff:/, '');
+  }
+  return (req.ip || req.socket?.remoteAddress || 'unknown').replace(/^::ffff:/, '');
+}
+
 router.use('/webhooks', manageLimit);
 
 function publicView(webhook) {
@@ -54,19 +66,39 @@ function publicView(webhook) {
 router.post('/webhooks', validate(webhookCreateBodySchema), async (req, res, next) => {
   try {
     const body = req.validated.body;
+    const ownerIp = clientIpFromRequest(req);
+    const existingCount = await webhookRepo.countByOwner(ownerIp);
+    if (existingCount >= config.webhooks.maxPerSubscriber) {
+      return next(new AppError(
+        'RATE_LIMITED',
+        `Webhook limit of ${config.webhooks.maxPerSubscriber} per subscriber exceeded`,
+        429,
+        { limit: config.webhooks.maxPerSubscriber, owner_ip: ownerIp },
+      ));
+    }
+
     const secret = body.secret || signatureService.generateSecret();
+    const reachability = await probeReachability(body.url);
     const webhook = await webhookRepo.create({
       url: body.url,
       events: body.events,
       secret,
       description: body.description,
+      owner_ip: ownerIp,
     });
 
-    return res.status(201).json({
+    const response = {
       ...publicView(webhook),
       secret,
       secret_warning: 'Store this secret now — it will not be shown again in plaintext.',
-    });
+      reachability: reachability.reachable ? 'reachable' : 'unreachable',
+    };
+
+    if (!reachability.reachable) {
+      response.warning = `Webhook target is unreachable during registration: ${reachability.error || 'request failed'}`;
+    }
+
+    return res.status(201).json(response);
   } catch (err) {
     return next(err);
   }

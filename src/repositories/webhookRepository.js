@@ -41,12 +41,13 @@ function normalize(record) {
     secret: record.secret,
     active: record.active !== false,
     description: record.description || null,
+    owner_ip: record.owner_ip || null,
     created_at: record.created_at,
     updated_at: record.updated_at,
   };
 }
 
-async function create({ url, events, secret, description }) {
+async function create({ url, events, secret, description, owner_ip }) {
   const id = generateId();
   const now = new Date().toISOString();
   const record = {
@@ -56,6 +57,7 @@ async function create({ url, events, secret, description }) {
     secret,
     active: true,
     description: description || null,
+    owner_ip: owner_ip || null,
     created_at: now,
     updated_at: now,
   };
@@ -66,6 +68,9 @@ async function create({ url, events, secret, description }) {
   // below) walks a deterministic, newest-first order rather than
   // whatever arbitrary order SMEMBERS happened to return (#131).
   await redis.zadd(IDS_KEY, Date.parse(now), id);
+  if (owner_ip) {
+    await redis.zadd(`webhooks:owner:${owner_ip}`, Date.parse(now), id);
+  }
   return normalize(record);
 }
 
@@ -91,6 +96,17 @@ async function listAll() {
   } catch (err) {
     logger.error('webhookRepository.listAll Redis error', { error: err.message });
     return [];
+  }
+}
+
+async function countByOwner(ownerIp) {
+  if (!ownerIp) return 0;
+  try {
+    const redis = cache.getClient();
+    return Number(await redis.zcard(`webhooks:owner:${ownerIp}`) || 0);
+  } catch (err) {
+    logger.error('webhookRepository.countByOwner Redis error', { ownerIp, error: err.message });
+    return 0;
   }
 }
 
@@ -136,10 +152,14 @@ async function remove(id) {
   if (!existing) return null;
   await cache.del(key(id));
   await redis.zrem(IDS_KEY, id);
+  if (existing.owner_ip) {
+    await redis.zrem(`webhooks:owner:${existing.owner_ip}`, id);
+  }
   return normalize(existing);
 }
 
 module.exports = {
+  countByOwner,
   create,
   findById,
   list,

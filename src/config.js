@@ -221,6 +221,7 @@ module.exports = {
     retryPollMs: parseInt(process.env.WEBHOOK_RETRY_POLL_MS, 10) || 5000,
     retryBatchSize: parseInt(process.env.WEBHOOK_RETRY_BATCH, 10) || 25,
     jsonMaxBytes: parseInt(process.env.WEBHOOK_JSON_MAX_BYTES, 10) || 65536,
+    maxPerSubscriber: parseInt(process.env.WEBHOOK_MAX_PER_SUBSCRIBER, 10) || 100,
     rateLimit: {
       windowSeconds: parseInt(process.env.WEBHOOK_RATELIMIT_WINDOW, 10) || 60,
       max: parseInt(process.env.WEBHOOK_RATELIMIT_MAX, 10) || 60,
@@ -229,5 +230,9 @@ module.exports = {
       windowSeconds: parseInt(process.env.WEBHOOK_TEST_RATELIMIT_WINDOW, 10) || 60,
       max: parseInt(process.env.WEBHOOK_TEST_RATELIMIT_MAX, 10) || 5,
     },
+  },
+  ws: {
+    maxConnections: parseInt(process.env.WS_MAX_CONNECTIONS, 10) || 100,
+    maxConnectionsPerIp: parseInt(process.env.WS_MAX_CONNECTIONS_PER_IP, 10) || 5,
   },
 };

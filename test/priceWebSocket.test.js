@@ -176,4 +176,28 @@ describe('WebSocket price stream', () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(subscriptionManager.connectionCount).toBe(before);
   });
+
+  test('enforces a per-IP connection cap', async () => {
+    const { PriceSubscriptionManager } = require('../src/ws/PriceSubscriptionManager');
+    const manager = new PriceSubscriptionManager();
+    const sockets = [];
+
+    for (let i = 0; i < 6; i += 1) {
+      const socket = {
+        readyState: 1,
+        close: jest.fn(),
+        send: jest.fn(),
+        on: jest.fn(),
+        terminate: jest.fn(),
+        constructor: { OPEN: 1 },
+      };
+      const accepted = manager.add(socket, { socket: { remoteAddress: '203.0.113.40' } });
+      if (accepted) sockets.push(socket);
+    }
+
+    expect(manager.connectionCount).toBeLessThanOrEqual(5);
+    for (const socket of sockets) {
+      manager._remove(socket);
+    }
+  });
 });

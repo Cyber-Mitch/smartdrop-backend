@@ -13,7 +13,7 @@ function attach(httpServer) {
 
   wss.on('connection', (ws, req) => {
     logger.info('Incoming WS connection', { ip: req.socket.remoteAddress });
-    subscriptionManager.add(ws);
+    subscriptionManager.add(ws, req);
   });
 
   wss.on('error', (err) => {
