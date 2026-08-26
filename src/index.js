@@ -25,6 +25,7 @@ const keysRouter = require('./routes/keys');
 const webhooksRouter = require('./routes/webhooks');
 const airdropsRouter = require('./routes/airdrops');
 const apiDocsRouter = require('./routes/apiDocs');
+const { router: metricsRouter, requestMetricsMiddleware } = require('./routes/metrics');
 
 const priceWebSocket = require('./ws/priceWebSocket');
 
@@ -64,6 +65,7 @@ let server = {
 };
 
 app.use(requestIdMiddleware);
+app.use(requestMetricsMiddleware);
 app.use(helmet());
 app.use(buildCorsMiddleware(config.corsAllowedOrigins));
 app.use(express.json({ limit: config.airdrops.jsonMaxBytes }));
@@ -167,6 +169,7 @@ app.use('/api/v1', webhooksRouter);
 app.use('/api/v1', airdropsRouter);
 app.use('/api-docs', globalApiLimit);
 app.use('/api-docs', apiDocsRouter);
+app.use(metricsRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
