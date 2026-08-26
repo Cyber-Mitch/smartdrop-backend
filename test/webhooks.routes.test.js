@@ -201,6 +201,10 @@ describe('GET /api/v1/webhooks/:id/deliveries', () => {
 describe('Full webhook lifecycle (integration)', () => {
   const app = buildApp();
 
+  beforeEach(() => {
+    mockAxiosPost.mockReset();
+  });
+
   test('create → test → update → list deliveries → delete', async () => {
     // 1. Create
     const created = await request(app)
@@ -291,5 +295,90 @@ describe('Full webhook lifecycle (integration)', () => {
     const res = await request(app).post(`/api/v1/webhooks/${created.body.id}/test`);
     expect(res.status).toBe(202);
     expect(res.body.delivery_id).toMatch(/^dlv_/);
+  });
+});
+
+describe('Webhook API contract', () => {
+  const app = buildApp();
+
+  test('secret is not returned in GET list response', async () => {
+    await request(app)
+      .post('/api/v1/webhooks')
+      .send({ url: 'https://example.com', events: ['*'], secret: 'whsec_supersecretvalue1234' });
+
+    const res = await request(app).get('/api/v1/webhooks');
+    const webhook = res.body.data[0];
+    expect(webhook).not.toHaveProperty('secret');
+    expect(webhook).toHaveProperty('secret_preview');
+  });
+
+  test('secret is not returned in GET by id response', async () => {
+    const created = await request(app)
+      .post('/api/v1/webhooks')
+      .send({ url: 'https://example.com', events: ['*'], secret: 'whsec_supersecretvalue1234' });
+
+    const res = await request(app).get(`/api/v1/webhooks/${created.body.id}`);
+    expect(res.body).not.toHaveProperty('secret');
+  });
+
+  test('webhook has default active=true on creation', async () => {
+    const res = await request(app)
+      .post('/api/v1/webhooks')
+      .send({ url: 'https://example.com', events: ['*'] });
+    expect(res.body.active).toBe(true);
+  });
+
+  test('wildcard event subscription is accepted', async () => {
+    const res = await request(app)
+      .post('/api/v1/webhooks')
+      .send({ url: 'https://example.com', events: ['*'], secret: 'whsec_aaaaaaaaaaaaaaaa' });
+    expect(res.status).toBe(201);
+    expect(res.body.events).toEqual(['*']);
+  });
+
+  test('multiple valid event types are accepted', async () => {
+    const res = await request(app)
+      .post('/api/v1/webhooks')
+      .send({
+        url: 'https://example.com',
+        events: ['pool.created', 'pool.assets_locked', 'price.alert'],
+        secret: 'whsec_aaaaaaaaaaaaaaaa',
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.events).toHaveLength(3);
+  });
+
+  test('PATCH can update events', async () => {
+    const created = await request(app)
+      .post('/api/v1/webhooks')
+      .send({ url: 'https://example.com', events: ['pool.created'], secret: 'whsec_aaaaaaaaaaaaaaaa' });
+
+    const res = await request(app)
+      .patch(`/api/v1/webhooks/${created.body.id}`)
+      .send({ events: ['pool.created', 'price.alert'] });
+    expect(res.status).toBe(200);
+    expect(res.body.events).toEqual(['pool.created', 'price.alert']);
+  });
+
+  test('PATCH can update URL', async () => {
+    const created = await request(app)
+      .post('/api/v1/webhooks')
+      .send({ url: 'https://old.com', events: ['*'], secret: 'whsec_aaaaaaaaaaaaaaaa' });
+
+    const res = await request(app)
+      .patch(`/api/v1/webhooks/${created.body.id}`)
+      .send({ url: 'https://new.com' });
+    expect(res.status).toBe(200);
+    expect(res.body.url).toBe('https://new.com');
+  });
+
+  test('deliveries endpoint returns empty array for webhook with no deliveries', async () => {
+    const created = await request(app)
+      .post('/api/v1/webhooks')
+      .send({ url: 'https://example.com', events: ['*'], secret: 'whsec_aaaaaaaaaaaaaaaa' });
+
+    const res = await request(app).get(`/api/v1/webhooks/${created.body.id}/deliveries`);
+    expect(res.status).toBe(200);
+    expect(res.body.deliveries).toHaveLength(0);
   });
 });
