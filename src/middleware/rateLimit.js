@@ -8,6 +8,9 @@ const AppError = require('../errors/AppError');
  * Fixed-window rate limiter backed by Redis INCR + EXPIRE.
  * Fails open if Redis is unreachable so a cache outage cannot lock out users.
  */
+// Track consecutive Redis failures per keyPrefix to escalate log severity.
+const consecutiveFailures = new Map();
+
 function buildRateLimit({ windowSeconds, max, keyPrefix }) {
   if (!Number.isFinite(windowSeconds) || windowSeconds <= 0) {
     throw new Error('windowSeconds must be a positive number');
@@ -30,6 +33,8 @@ function buildRateLimit({ windowSeconds, max, keyPrefix }) {
       if (count === 1) {
         await redis.expire(key, windowSeconds);
       }
+      // Reset failure counter on success.
+      consecutiveFailures.delete(keyPrefix);
       const remaining = Math.max(0, max - count);
       const resetAt = (bucket + 1) * windowSeconds;
       const retryAfterSeconds = Math.max(1, resetAt - Math.floor(Date.now() / 1000));
@@ -47,7 +52,19 @@ function buildRateLimit({ windowSeconds, max, keyPrefix }) {
       }
       return next();
     } catch (err) {
-      logger.warn('Rate limit fail-open due to cache error', { error: err.message });
+      const failures = (consecutiveFailures.get(keyPrefix) || 0) + 1;
+      consecutiveFailures.set(keyPrefix, failures);
+      // First failure is a warning; 3+ consecutive failures escalate to error
+      // so operators see persistent Redis issues in alerting.
+      if (failures >= 3) {
+        logger.error('Rate limit disabled — Redis error persists', {
+          keyPrefix,
+          consecutive_failures: failures,
+          error: err.message,
+        });
+      } else {
+        logger.warn('Rate limit fail-open due to cache error', { keyPrefix, error: err.message });
+      }
       return next();
     }
   };

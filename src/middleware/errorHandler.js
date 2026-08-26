@@ -18,6 +18,10 @@ function errorHandler(err, req, res, _next) {
     status = err.statusCode;
     code = err.code;
     message = err.message;
+  } else if (err.status || err.statusCode) {
+    status = err.status || err.statusCode;
+    code = 'FORBIDDEN';
+    message = err.message || 'Request rejected';
   } else if (isPayloadTooLarge) {
     status = 413;
     code = 'PAYLOAD_TOO_LARGE';
