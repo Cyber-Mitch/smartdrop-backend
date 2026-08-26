@@ -183,6 +183,8 @@ paths:
               events:
                 - airdrop.completed
                 - recipient.claimed
+              filters:
+                pool_id: pool_123
               secret: whsec_myverys3cretkey
       x-rate-limit:
         window: 60s
@@ -200,6 +202,8 @@ paths:
                 events:
                   - airdrop.completed
                   - recipient.claimed
+                filters:
+                  pool_id: pool_123
                 active: true
                 secret_preview: whse...key
                 created_at: '2026-06-27T12:00:00.000Z'
@@ -1150,6 +1154,19 @@ components:
           items:
             $ref: '#/components/schemas/WebhookEvent'
           description: Events the endpoint wishes to subscribe to
+          maxItems: 25
+          x-note: Wildcard subscriptions must be `["*"]` by themselves.
+        filters:
+          type: object
+          additionalProperties: false
+          properties:
+            asset:
+              type: string
+              example: USDC
+            pool_id:
+              type: string
+              example: pool_123
+          description: Optional asset/pool selector applied after event matching
         secret:
           type: string
           minLength: 8
@@ -1172,6 +1189,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/WebhookEvent'
+        filters:
+          type: object
+          additionalProperties: false
+          nullable: true
         active:
           type: boolean
           description: Whether the endpoint is currently active
@@ -1189,6 +1210,7 @@ components:
         - id
         - url
         - events
+        - filters
         - active
         - secret_preview
         - created_at
@@ -1221,9 +1243,10 @@ components:
           type: string
           enum:
             - pending
-            - delivered
+            - success
             - failed
-            - dead_letter
+        trace_id:
+          type: string
         attempt_count:
           type: integer
           minimum: 0
@@ -1249,6 +1272,7 @@ components:
         - status
         - attempt_count
         - attempts
+        - trace_id
         - created_at
         - updated_at
 
