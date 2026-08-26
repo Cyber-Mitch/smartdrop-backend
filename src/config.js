@@ -220,6 +220,7 @@ module.exports = {
     // its own measurement rather than a guess made alongside this fix.
     retryPollMs: parseInt(process.env.WEBHOOK_RETRY_POLL_MS, 10) || 5000,
     retryBatchSize: parseInt(process.env.WEBHOOK_RETRY_BATCH, 10) || 25,
+    jsonMaxBytes: parseInt(process.env.WEBHOOK_JSON_MAX_BYTES, 10) || 65536,
     rateLimit: {
       windowSeconds: parseInt(process.env.WEBHOOK_RATELIMIT_WINDOW, 10) || 60,
       max: parseInt(process.env.WEBHOOK_RATELIMIT_MAX, 10) || 60,

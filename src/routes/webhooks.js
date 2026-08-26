@@ -19,6 +19,7 @@ const {
 } = require('../validation/schemas');
 
 const router = express.Router();
+router.use(express.json({ limit: config.webhooks.jsonMaxBytes }));
 const validateRouteIdParams = validate(routeIdParamsSchema, 'params');
 const validatePaginationQuery = validate(paginationQuerySchema, 'query');
 
