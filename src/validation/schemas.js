@@ -36,6 +36,28 @@ const routeIdParamsSchema = z.object({
     .regex(/^[A-Za-z0-9_-]+$/, 'ID can contain only letters, numbers, underscores, and hyphens'),
 });
 
+// Ranges that must never be reachable from an operator-supplied URL — hitting
+// them lets an attacker use this server as a relay into the internal network.
+const PRIVATE_HOSTNAME_RE =
+  /^(localhost|.*\.local)(:\d+)?$/i;
+
+const PRIVATE_IP_RE = new RegExp(
+  '^(' +
+  '127\\.' +                              // loopback
+  '|10\\.' +                              // RFC-1918 /8
+  '|172\\.(1[6-9]|2\\d|3[01])\\.' +      // RFC-1918 /12
+  '|192\\.168\\.' +                       // RFC-1918 /16
+  '|169\\.254\\.' +                       // link-local
+  '|0\\.0\\.0\\.0' +                      // unspecified
+  '|::1' +                                // IPv6 loopback
+  '|fc[0-9a-f]{2}:' +                    // IPv6 ULA
+  ')',
+);
+
+function isPrivateTarget(hostname) {
+  return PRIVATE_HOSTNAME_RE.test(hostname) || PRIVATE_IP_RE.test(hostname);
+}
+
 const httpUrlSchema = z
   .string()
   .trim()
@@ -48,6 +70,16 @@ const httpUrlSchema = z
     }
   }, {
     message: 'Must be an http(s) URL',
+  })
+  .refine((value) => {
+    try {
+      const { hostname } = new URL(value);
+      return !isPrivateTarget(hostname);
+    } catch {
+      return false;
+    }
+  }, {
+    message: 'URL must not target a private or internal network address',
   });
 
 const priceParamsSchema = z.object({
