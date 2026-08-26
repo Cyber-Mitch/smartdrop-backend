@@ -209,6 +209,7 @@ describe('repeat: true with cooldown', () => {
     const [alert] = await alertsService.list();
     const sixMinutesAgo = new Date(Date.now() - 6 * 60 * 1000).toISOString();
     mockStore.set(`alert:${alert.id}`, { ...alert, last_fired_at: sixMinutesAgo });
+    mockStore.set(`alert:cooldown:${alert.asset}`, sixMinutesAgo);
 
     await alertsService.evaluateForAsset('XLM', 0.07);
     expect(mockWebhookDeliver).toHaveBeenCalledTimes(2);
@@ -411,5 +412,12 @@ describe('evaluateForAsset with multiple alerts', () => {
     await alertsService.evaluateForAsset('XLM', 0.05);
     expect(mockWebhookDeliver).toHaveBeenCalledTimes(1);
     expect(mockWebhookDeliver.mock.calls[0][2].asset).toBe('XLM');
+  });
+
+  test('enforces per-asset cooldown for repeat alerts on the same asset', async () => {
+    await makeAlert({ repeat: true, threshold_usd: 0.09, webhook_url: 'https://a.com/hook' });
+    await makeAlert({ repeat: true, threshold_usd: 0.10, webhook_url: 'https://b.com/hook' });
+    await alertsService.evaluateForAsset('XLM', 0.05);
+    expect(mockWebhookDeliver).toHaveBeenCalledTimes(1);
   });
 });
