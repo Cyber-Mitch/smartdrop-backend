@@ -3,6 +3,10 @@ const config = require('../config');
 const logger = require('../logger');
 const eventStore = require('./eventStore');
 const { parseContractEvent } = require('./eventParser');
+const { CircuitBreaker } = require('../utils/circuitBreaker');
+
+const RPC_MAX_RETRIES = 3;
+const RPC_RETRY_BASE_MS = 1000;
 
 class EventPoller {
   constructor(options = {}) {
@@ -18,6 +22,11 @@ class EventPoller {
     this.lastRun = null;
     this.lastError = null;
     this.latestLedger = null;
+    this.rpcBreaker = options.rpcBreaker || new CircuitBreaker('soroban-rpc', {
+      failureThreshold: options.rpcFailureThreshold ?? 5,
+      successThreshold: options.rpcSuccessThreshold ?? 1,
+      timeoutMs: options.rpcCooldownMs ?? 60000,
+    });
   }
 
   isConfigured() {
@@ -43,21 +52,51 @@ class EventPoller {
       return { skipped: true, reason: 'SMARTDROP_CONTRACT_ID not configured' };
     }
 
+    if (this.rpcBreaker.isOpen()) {
+      this.logger.warn('Soroban RPC circuit breaker open, skipping poll cycle');
+      return { skipped: true, reason: 'circuit breaker open' };
+    }
+
     const previousLedger = await this.store.getLastLedger(null);
     const startLedger = previousLedger == null
       ? this.startLedger || 0
       : Math.max(Number(previousLedger) + 1, this.startLedger || 0);
 
-    const response = await this.server.getEvents({
-      startLedger,
-      filters: [
-        {
-          type: 'contract',
-          contractIds: [this.contractId],
-        },
-      ],
-      limit: this.pollLimit,
-    });
+    let response;
+    let lastError;
+    for (let attempt = 1; attempt <= RPC_MAX_RETRIES; attempt++) {
+      try {
+        response = await this.rpcBreaker.call(() =>
+          this.server.getEvents({
+            startLedger,
+            filters: [
+              {
+                type: 'contract',
+                contractIds: [this.contractId],
+              },
+            ],
+            limit: this.pollLimit,
+          })
+        );
+        if (response !== null) break;
+        lastError = new Error('RPC returned null (circuit breaker)');
+      } catch (err) {
+        lastError = err;
+        if (attempt < RPC_MAX_RETRIES) {
+          const delay = RPC_RETRY_BASE_MS * 2 ** (attempt - 1);
+          this.logger.warn('Soroban RPC call failed, retrying', {
+            attempt,
+            maxRetries: RPC_MAX_RETRIES,
+            delayMs: delay,
+            error: err.message,
+          });
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+    }
+    if (!response) {
+      throw lastError || new Error('Soroban RPC call failed after retries');
+    }
 
     const rawEvents = response.events || [];
     const parsedEvents = rawEvents.map(parseContractEvent).filter(Boolean);

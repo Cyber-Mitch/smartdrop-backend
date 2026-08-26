@@ -186,6 +186,14 @@ async function dispatch({ event_type: eventType, event_id: eventId, data }) {
     throw new Error('event_id is required to dispatch a webhook event');
   }
 
+  // Deduplication: skip if this event has already been dispatched
+  const dedupKey = `webhook:dispatched:${eventId}`;
+  const alreadyDispatched = await cache.get(dedupKey);
+  if (alreadyDispatched) {
+    logger.info('Skipping duplicate webhook dispatch', { event_id: eventId, event_type: eventType });
+    return [];
+  }
+
   const targets = await webhookRepo.listActiveForEvent(eventType, events.matchesSubscription);
   if (targets.length === 0) return [];
 
@@ -202,18 +210,21 @@ async function dispatch({ event_type: eventType, event_id: eventId, data }) {
     data: data || {},
   };
 
-  return Promise.allSettled(
+  const results = await Promise.allSettled(
     targets.map((webhook) => deliverToWebhook(webhook, eventType, eventId, payload))
-  ).then((results) =>
-    results.map((result, i) => {
-      const webhook_id = targets[i].id;
-      if (result.status === 'fulfilled') {
-        return { webhook_id, delivery: result.value, error: null };
-      }
-      logger.error('Webhook delivery failed', { webhook_id, error: result.reason?.message || String(result.reason) });
-      return { webhook_id, delivery: null, error: result.reason?.message || String(result.reason) };
-    })
   );
+
+  // Mark event as dispatched for deduplication (expire after 24h)
+  await cache.set(dedupKey, Date.now(), 86400);
+
+  return results.map((result, i) => {
+    const webhook_id = targets[i].id;
+    if (result.status === 'fulfilled') {
+      return { webhook_id, delivery: result.value, error: null };
+    }
+    logger.error('Webhook delivery failed', { webhook_id, error: result.reason?.message || String(result.reason) });
+    return { webhook_id, delivery: null, error: result.reason?.message || String(result.reason) };
+  });
 }
 
 async function sendTest(webhookId) {
