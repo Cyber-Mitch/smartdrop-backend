@@ -17,6 +17,7 @@ const buildRateLimit = require('./middleware/rateLimit');
 const { requestIdMiddleware } = require('./middleware/requestId');
 const { requireApiKey } = require('./middleware/auth');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
+const { checkDatabase } = require('./services/dbHealth');
 const pricesRouter = require('./routes/prices');
 const alertsRouter = require('./routes/alerts');
 const indexerRouter = require('./routes/indexer');
@@ -70,11 +71,12 @@ app.use(helmet());
 app.use(buildCorsMiddleware(config.corsAllowedOrigins));
 app.use(express.json({ limit: config.airdrops.jsonMaxBytes }));
 
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
   const redisConnected = cache.isConnected();
   const priceRefreshHealth = wrappedPriceRefreshJob.getHealth();
   const webhookWorkerHealth = wrappedWebhookRetryWorker.getHealth();
   const airdropExpiryHealth = wrappedAirdropExpiryJob.getHealth();
+  const database = await checkDatabase();
 
   // Compute overall status:
   //   unhealthy – Redis is down, or a job is stalled past its grace period
@@ -86,11 +88,11 @@ app.get('/health', (req, res) => {
   // work. The health check distinguishes "not leader" from "stalled" via the
   // `leader` field.
   let status = 'ok';
-  if (!redisConnected || !priceRefreshHealth.healthy || !webhookWorkerHealth.healthy) {
+  if (!redisConnected || !priceRefreshHealth.healthy || !webhookWorkerHealth.healthy || database.status === 'error') {
     const jobsDegraded =
       (!priceRefreshHealth.healthy && !priceRefreshHealth.stalled) ||
       (!webhookWorkerHealth.healthy && !webhookWorkerHealth.stalled);
-    status = (!redisConnected || priceRefreshHealth.stalled || webhookWorkerHealth.stalled)
+    status = (!redisConnected || priceRefreshHealth.stalled || webhookWorkerHealth.stalled || database.status === 'error')
       ? 'unhealthy'
       : jobsDegraded ? 'degraded' : 'unhealthy';
   }
@@ -139,10 +141,7 @@ app.get('/health', (req, res) => {
         leader_since: airdropExpiryHealth.leaderSince,
       },
     },
-    database: {
-      configured: false,
-      status: 'removed',
-    },
+    database,
     price_source_circuits: priceOracle.getSourceCircuitStates(),
     leader_election: {
       instance_id: config.leaderElection.instanceId,

@@ -399,6 +399,457 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/v1/airdrops:
+    post:
+      operationId: createAirdrop
+      summary: Create an airdrop
+      description: Creates a new airdrop with optional initial recipients.
+      tags:
+        - Airdrops
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAirdropRequest'
+      responses:
+        '201':
+          description: Airdrop created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Airdrop'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      operationId: listAirdrops
+      summary: List airdrops
+      description: Returns a paginated list of airdrops.
+      tags:
+        - Airdrops
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: Paginated list of airdrops
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Airdrop'
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/airdrops/{id}:
+    get:
+      operationId: getAirdrop
+      summary: Get an airdrop
+      description: Returns a single airdrop by ID.
+      tags:
+        - Airdrops
+      parameters:
+        - $ref: '#/components/parameters/AirdropIdParam'
+      responses:
+        '200':
+          description: Airdrop details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Airdrop'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      operationId: updateAirdrop
+      summary: Update an airdrop
+      description: Updates an airdrop's name, description, or expiry ledger.
+      tags:
+        - Airdrops
+      parameters:
+        - $ref: '#/components/parameters/AirdropIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAirdropRequest'
+      responses:
+        '200':
+          description: Airdrop updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Airdrop'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: deleteAirdrop
+      summary: Delete an airdrop
+      description: Permanently deletes an airdrop.
+      tags:
+        - Airdrops
+      parameters:
+        - $ref: '#/components/parameters/AirdropIdParam'
+      responses:
+        '200':
+          description: Airdrop deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                    enum: [true]
+                  id:
+                    type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/airdrops/{id}/cancel:
+    post:
+      operationId: cancelAirdrop
+      summary: Cancel an airdrop
+      description: Cancels an airdrop, preventing further execution.
+      tags:
+        - Airdrops
+      parameters:
+        - $ref: '#/components/parameters/AirdropIdParam'
+      responses:
+        '200':
+          description: Airdrop cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Airdrop'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/airdrops/{id}/recipients:
+    post:
+      operationId: addAirdropRecipients
+      summary: Add recipients to an airdrop
+      description: |
+        Adds recipients to an airdrop via JSON body or CSV file upload.
+        Duplicate addresses within the request are rejected.
+      tags:
+        - Airdrops
+      parameters:
+        - $ref: '#/components/parameters/AirdropIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddRecipientsRequest'
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: CSV file with address and amount columns
+      responses:
+        '201':
+          description: Recipients added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  added:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: Duplicate recipient addresses
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      operationId: listAirdropRecipients
+      summary: List airdrop recipients
+      description: Returns a paginated list of recipients for an airdrop.
+      tags:
+        - Airdrops
+      parameters:
+        - $ref: '#/components/parameters/AirdropIdParam'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: Paginated list of recipients
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Recipient'
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/alerts:
+    post:
+      operationId: createAlert
+      summary: Create a price alert
+      description: Creates a new price alert that triggers a webhook when conditions are met.
+      tags:
+        - Alerts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAlertRequest'
+      responses:
+        '201':
+          description: Alert created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Alert'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      operationId: listAlerts
+      summary: List alerts
+      description: Returns a paginated list of price alerts.
+      tags:
+        - Alerts
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: Paginated list of alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Alert'
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/alerts/{id}:
+    delete:
+      operationId: deleteAlert
+      summary: Delete an alert
+      description: Permanently deletes a price alert.
+      tags:
+        - Alerts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^alrt_
+          description: Alert ID
+          example: alrt_a1b2c3d4e5f6g7h8
+      responses:
+        '200':
+          description: Alert deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                    enum: [true]
+                  id:
+                    type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/airdrops/{id}/status:
+    get:
+      operationId: getAirdropOnchainStatus
+      summary: Get airdrop on-chain status
+      description: Returns the on-chain indexing status of an airdrop.
+      tags:
+        - Indexer
+      parameters:
+        - $ref: '#/components/parameters/AirdropIdParam'
+      responses:
+        '200':
+          description: Airdrop on-chain status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  airdrop_id:
+                    type: string
+                  status:
+                    type: string
+                  events_count:
+                    type: integer
+        '400':
+          description: Invalid airdrop ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Airdrop not indexed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/airdrops/{id}/onchain-recipients:
+    get:
+      operationId: getAirdropOnchainRecipients
+      summary: Get on-chain recipients
+      description: |
+        Returns recipients derived from indexed on-chain claim events.
+        Pagination is a slice of the fully-materialized list.
+      tags:
+        - Indexer
+      parameters:
+        - $ref: '#/components/parameters/AirdropIdParam'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: Paginated on-chain recipients
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '400':
+          description: Invalid airdrop ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/recipients/{address}/claims:
+    get:
+      operationId: getRecipientClaims
+      summary: Get recipient claims
+      description: Returns on-chain claim events for a specific recipient address.
+      tags:
+        - Indexer
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Stellar recipient address
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: Paginated claim events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '400':
+          description: Invalid recipient address
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/indexer/status:
+    get:
+      operationId: getIndexerStatus
+      summary: Indexer service status
+      description: Returns the current status, ledger height, and lag of the on-chain indexer.
+      tags:
+        - Indexer
+      responses:
+        '200':
+          description: Indexer status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  running:
+                    type: boolean
+                  latest_ledger:
+                    type: integer
+                    nullable: true
+                  last_ledger:
+                    type: integer
+                    nullable: true
+                  events_count:
+                    type: integer
+                  lag:
+                    type: integer
+                    nullable: true
+                  ledger_lag:
+                    type: integer
+                    nullable: true
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /ws:
     get:
       operationId: websocketEndpoint
@@ -448,6 +899,15 @@ components:
         maximum: 100
         default: 20
       description: Results per page (max 100).
+    AirdropIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: ^drop_
+      description: Airdrop ID
+      example: drop_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
 
   schemas:
     StellarAddress:
@@ -521,6 +981,7 @@ components:
           enum:
             - ok
             - degraded
+            - unhealthy
           description: Service health status
         timestamp:
           type: string
@@ -532,6 +993,26 @@ components:
         redis_unavailable:
           type: boolean
           description: Inverse of redis_connected (for legacy monitoring)
+        database:
+          type: object
+          description: PostgreSQL connectivity status
+          properties:
+            configured:
+              type: boolean
+              description: Whether a DATABASE_URL is configured
+            checked:
+              type: boolean
+              description: Whether a connectivity check was performed
+            status:
+              type: string
+              enum:
+                - ok
+                - error
+                - unavailable
+              description: Database check result
+            error:
+              type: string
+              description: Error message if status is error
         price_source_circuits:
           type: array
           description: Circuit-breaker state for each price source with a nonRetryable failure mode (e.g. an invalid API key)
@@ -554,6 +1035,7 @@ components:
         - timestamp
         - redis_connected
         - redis_unavailable
+        - database
 
     PriceResponse:
       type: object
@@ -859,6 +1341,226 @@ components:
         - error
         - message
 
+    Airdrop:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique airdrop identifier (prefixed with `drop_`)
+          example: drop_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+        name:
+          type: string
+          description: Human-readable airdrop name
+          example: Community rewards
+        description:
+          type: string
+          nullable: true
+          description: Optional description
+        asset:
+          $ref: '#/components/schemas/AssetCode'
+        asset_issuer:
+          $ref: '#/components/schemas/StellarAddress'
+        total_amount:
+          type: number
+          description: Total airdrop amount in asset units
+          example: 10000
+        expiry_ledger:
+          type: integer
+          description: Ledger number after which the airdrop expires
+          example: 52489123
+        contract_airdrop_id:
+          type: string
+          nullable: true
+          description: On-chain contract airdrop ID, set after execution
+        status:
+          type: string
+          enum:
+            - draft
+            - completed
+            - failed
+            - cancelled
+            - expired
+          description: Current airdrop status
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - asset
+        - asset_issuer
+        - total_amount
+        - expiry_ledger
+        - status
+        - created_at
+        - updated_at
+
+    CreateAirdropRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Human-readable airdrop name
+          example: Community rewards
+        description:
+          type: string
+          description: Optional description
+        asset:
+          $ref: '#/components/schemas/AssetCode'
+        asset_issuer:
+          $ref: '#/components/schemas/StellarAddress'
+        total_amount:
+          type: number
+          exclusiveMinimum: 0
+          description: Total airdrop amount in asset units
+          example: 10000
+        expiry_ledger:
+          type: integer
+          description: Ledger number after which the airdrop expires
+          example: 52489123
+        recipients:
+          type: array
+          description: Optional initial recipients
+          items:
+            $ref: '#/components/schemas/Recipient'
+      required:
+        - name
+        - asset
+        - asset_issuer
+        - total_amount
+        - expiry_ledger
+
+    UpdateAirdropRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: New airdrop name
+        description:
+          type: string
+          description: New description
+        expiry_ledger:
+          type: integer
+          description: New expiry ledger (must be greater than current ledger)
+      minProperties: 1
+
+    AddRecipientsRequest:
+      type: object
+      properties:
+        recipients:
+          type: array
+          description: Recipients to add to the airdrop
+          items:
+            $ref: '#/components/schemas/Recipient'
+      required:
+        - recipients
+
+    Recipient:
+      type: object
+      properties:
+        address:
+          $ref: '#/components/schemas/StellarAddress'
+        amount:
+          type: number
+          exclusiveMinimum: 0
+          description: Amount in asset units (at most 7 decimal places)
+          example: 100.5
+      required:
+        - address
+        - amount
+
+    Alert:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique alert identifier (prefixed with `alrt_`)
+          example: alrt_a1b2c3d4e5f6g7h8
+        asset:
+          $ref: '#/components/schemas/AssetCode'
+        type:
+          type: string
+          enum:
+            - above
+            - below
+            - change_pct
+          description: Alert trigger condition
+        threshold_usd:
+          type: number
+          description: Price threshold in USD (or percentage for change_pct)
+          example: 0.5
+        webhook_url:
+          type: string
+          format: uri
+          description: Webhook URL to notify on trigger
+        webhook_secret:
+          type: string
+          description: Secret used for HMAC signature verification (not returned in responses)
+        repeat:
+          type: boolean
+          description: Whether the alert re-fires after cooldown
+        created_at:
+          type: string
+          format: date-time
+        last_fired_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the alert last fired
+        baseline_price:
+          type: number
+          nullable: true
+          description: Baseline price for change_pct alerts
+      required:
+        - id
+        - asset
+        - type
+        - threshold_usd
+        - webhook_url
+        - repeat
+        - created_at
+
+    CreateAlertRequest:
+      type: object
+      properties:
+        asset:
+          $ref: '#/components/schemas/AssetCode'
+        type:
+          type: string
+          enum:
+            - above
+            - below
+            - change_pct
+          description: Alert trigger condition
+        threshold_usd:
+          type: number
+          exclusiveMinimum: 0
+          description: Price threshold in USD (or percentage for change_pct)
+          example: 0.5
+        webhook_url:
+          type: string
+          format: uri
+          description: Webhook URL to notify on trigger
+        webhook_secret:
+          type: string
+          minLength: 8
+          description: Secret used for HMAC signature verification
+        repeat:
+          type: boolean
+          description: Whether the alert should re-fire after cooldown
+      required:
+        - asset
+        - type
+        - threshold_usd
+        - webhook_url
+        - webhook_secret
+
+  parameters:
   responses:
     ValidationError:
       description: Request validation failed
