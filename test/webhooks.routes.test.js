@@ -16,6 +16,7 @@ const mockAxiosPost = jest.fn();
 jest.mock('axios', () => ({ post: (...args) => mockAxiosPost(...args) }));
 
 const webhooksRouter = require('../src/routes/webhooks');
+const dispatcher = require('../src/services/webhookDispatcher');
 
 function buildApp() {
   const app = express();
@@ -74,6 +75,18 @@ describe('POST /api/v1/webhooks', () => {
       .post('/api/v1/webhooks')
       .send({ url: 'https://example.com/hook', events: ['*'], secret: 'short' });
     expect(res.status).toBe(400);
+  });
+
+  test('accepts webhook filters on registration', async () => {
+    const res = await request(app)
+      .post('/api/v1/webhooks')
+      .send({
+        url: 'https://example.com/hook',
+        events: ['pool.assets_locked'],
+        filters: { asset: 'usdc', pool_id: 'pool_123' },
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.filters).toEqual({ asset: 'USDC', pool_id: 'pool_123' });
   });
 });
 
@@ -195,6 +208,29 @@ describe('GET /api/v1/webhooks/:id/deliveries', () => {
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.deliveries)).toBe(true);
     expect(res.body.deliveries.length).toBeGreaterThan(0);
+  });
+
+  test('filters deliveries by status', async () => {
+    const created = await request(app).post('/api/v1/webhooks').send({
+      url: 'https://example.com/hook', events: ['*'], secret: 'whsec_aaaaaaaaaaaaaaaa',
+    });
+
+    mockAxiosPost.mockResolvedValueOnce({ status: 500 });
+    const results = await dispatcher.dispatch({
+      event_type: 'pool.assets_locked',
+      event_id: 'evt_failed_delivery',
+      data: { pool_id: 'pool_1' },
+    });
+    const [{ delivery }] = results;
+
+    mockAxiosPost.mockResolvedValue({ status: 500 });
+    await dispatcher.attempt(delivery.id);
+    await dispatcher.attempt(delivery.id);
+
+    const res = await request(app).get(`/api/v1/webhooks/${created.body.id}/deliveries?status=failed`);
+    expect(res.status).toBe(200);
+    expect(res.body.deliveries.length).toBeGreaterThan(0);
+    expect(res.body.deliveries.every((d) => d.status === 'failed')).toBe(true);
   });
 });
 

@@ -43,6 +43,7 @@ function publicView(webhook) {
     id: webhook.id,
     url: webhook.url,
     events: webhook.events,
+    filters: webhook.filters,
     active: webhook.active,
     description: webhook.description,
     created_at: webhook.created_at,
@@ -60,6 +61,7 @@ router.post('/webhooks', validate(webhookCreateBodySchema), async (req, res, nex
       events: body.events,
       secret,
       description: body.description,
+      filters: body.filters,
     });
 
     return res.status(201).json({
@@ -135,8 +137,8 @@ router.get('/webhooks/:id/deliveries', validateRouteIdParams, validate(webhookDe
   try {
     const webhook = await webhookRepo.findById(req.params.id);
     if (!webhook) return next(new AppError('NOT_FOUND', 'Webhook not found', 404));
-    const { limit } = req.validated.query;
-    const deliveries = await deliveryRepo.listByWebhook(req.params.id, limit);
+    const { limit, status } = req.validated.query;
+    const deliveries = await deliveryRepo.listByWebhook(req.params.id, { limit, status });
     return res.json({ deliveries });
   } catch (err) {
     return next(err);

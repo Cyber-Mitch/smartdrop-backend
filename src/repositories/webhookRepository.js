@@ -41,12 +41,13 @@ function normalize(record) {
     secret: record.secret,
     active: record.active !== false,
     description: record.description || null,
+    filters: record.filters ? { ...record.filters } : null,
     created_at: record.created_at,
     updated_at: record.updated_at,
   };
 }
 
-async function create({ url, events, secret, description }) {
+async function create({ url, events, secret, description, filters }) {
   const id = generateId();
   const now = new Date().toISOString();
   const record = {
@@ -56,6 +57,7 @@ async function create({ url, events, secret, description }) {
     secret,
     active: true,
     description: description || null,
+    filters: filters || null,
     created_at: now,
     updated_at: now,
   };
