@@ -7,6 +7,8 @@ const stellarPublicKeySchema = z
   .string()
   .regex(/^G[A-Z0-9]{55}$/, 'Must be a valid Stellar public key');
 
+const { toStroops, sumStroops, stroopsEqual } = require('../utils/stroops');
+
 const assetCodeSchema = z
   .string()
   .trim()
@@ -105,7 +107,19 @@ const MAX_AMOUNT_UNITS = Number(9223372036854775807n / 10000000n);
 
 const recipientSchema = z.object({
   address: stellarPublicKeySchema,
-  amount: z.number().positive().max(MAX_AMOUNT_UNITS, `amount exceeds Stellar Int64 ceiling`),
+  amount: z
+    .number()
+    .positive()
+    .max(MAX_AMOUNT_UNITS, 'amount exceeds Stellar Int64 ceiling')
+    .refine((v) => Number.isFinite(v), 'amount must be a finite number')
+    .refine(
+      (v) => {
+        const str = String(v);
+        const dotIndex = str.indexOf('.');
+        return dotIndex === -1 || str.length - dotIndex - 1 <= 7;
+      },
+      'amount must have at most 7 decimal places'
+    ),
 });
 
 const recipientsSchema = z
@@ -146,12 +160,21 @@ function airdropCreateBodySchema(currentLedger) {
     .superRefine((body, ctx) => {
       if (body.recipients.length === 0) return;
 
-      const total = body.recipients.reduce((sum, recipient) => sum + recipient.amount, 0);
-      if (total !== body.total_amount) {
+      try {
+        const totalStroops = sumStroops(body.recipients);
+        const expectedStroops = toStroops(body.total_amount);
+        if (totalStroops !== expectedStroops) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['recipients'],
+            message: `sum of recipient amounts must equal total_amount (${body.total_amount})`,
+          });
+        }
+      } catch (err) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['recipients'],
-          message: `sum of recipient amounts (${total}) must equal total_amount (${body.total_amount})`,
+          message: err.message,
         });
       }
     });
