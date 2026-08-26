@@ -9,6 +9,12 @@ const { CircuitBreaker } = require('../utils/circuitBreaker');
 const CACHE_PREFIX = 'price:';
 const HISTORY_PREFIX = 'price:history:';
 const breakerOptions = config.price.circuitBreaker;
+
+// In-flight de-duplication map: key -> Promise. Prevents concurrent getPrice/
+// fetchFreshPrice calls for the same asset from each independently hitting all
+// upstream sources (CoinGecko, CoinMarketCap, Stellar DEX) on a cache miss.
+const inFlight = new Map();
+
 const SOURCES = [
   {
     name: 'stellar_dex',
@@ -72,7 +78,7 @@ async function detectAnomaly(currentPrice, assetCode, issuer) {
     history = await cache.get(historyKey);
   } catch (err) {
     logger.warn('Cache read failed in anomaly detection, skipping', { error: err.message });
-    return false;
+    return { anomalous: false, changePercent: 0 };
   }
 
   if (!history || !history.price || history.price <= 0) {
@@ -81,12 +87,13 @@ async function detectAnomaly(currentPrice, assetCode, issuer) {
     } catch (err) {
       logger.warn('Cache write failed in anomaly detection', { error: err.message });
     }
-    return false;
+    return { anomalous: false, changePercent: 0 };
   }
 
   const changePercent = Math.abs((currentPrice - history.price) / history.price) * 100;
+  const anomalous = changePercent > config.price.anomalyThresholdPercent;
 
-  if (changePercent > config.price.anomalyThresholdPercent) {
+  if (anomalous) {
     logger.warn('Price anomaly detected', {
       assetCode,
       issuer,
@@ -102,7 +109,7 @@ async function detectAnomaly(currentPrice, assetCode, issuer) {
     logger.warn('Cache write failed in anomaly detection', { error: err.message });
   }
 
-  return changePercent > config.price.anomalyThresholdPercent;
+  return { anomalous, changePercent };
 }
 
 async function fetchFromAllSources(assetCode, issuer) {
@@ -178,10 +185,11 @@ async function getPrice(assetCode, issuer = null) {
   return fetchFreshPrice(assetCode, issuer, redisUnavailable);
 }
 
-async function fetchFreshPrice(assetCode, issuer = null, redisUnavailable = false) {
+async function doFetchFreshPrice(assetCode, issuer = null, redisUnavailable = false) {
   const sourceResults = await fetchFromAllSources(assetCode, issuer);
   const sourcesAttempted = sourceResults.map((r) => r.source);
   const prices = sourceResults.map((r) => r.price);
+  const quorumMet = sourcesAttempted.length >= config.price.minSources;
 
   const aggregatedPrice = median(prices);
 
@@ -197,13 +205,49 @@ async function fetchFreshPrice(assetCode, issuer = null, redisUnavailable = fals
       stale_warning: 'No price data available from any source',
       sources_attempted: sourcesAttempted,
       redis_unavailable: redisUnavailable,
+      quorum_met: false,
+      anomalous: false,
     };
   }
 
   const primarySource = sourceResults.length > 0 ? sourceResults[0].source : 'aggregated';
 
+  // Anomaly detection — quorum_met is computed from source count, independent of Redis
+  let anomalous = false;
   if (!redisUnavailable) {
-    await detectAnomaly(aggregatedPrice, assetCode, issuer);
+    const anomalyResult = await detectAnomaly(aggregatedPrice, assetCode, issuer);
+    anomalous = anomalyResult.anomalous;
+  }
+
+  // In reject mode, fall back to last known good cached price for anomalous readings
+  if (anomalous && config.price.anomalyAction === 'reject' && !redisUnavailable) {
+    try {
+      const cacheKey = buildCacheKey(assetCode, issuer);
+      const cached = await cache.get(cacheKey);
+      if (cached && cached.price) {
+        logger.warn('Anomalous price rejected, returning cached price', {
+          assetCode,
+          issuer,
+          rejectedPrice: aggregatedPrice,
+          cachedPrice: cached.price,
+        });
+        return {
+          asset_code: assetCode,
+          issuer: issuer || null,
+          price_usd: cached.price,
+          source: cached.source || 'cached',
+          fetched_at: new Date(cached.fetchedAt).toISOString(),
+          is_stale: true,
+          stale_warning: 'Anomalous price rejected — returning last known good price',
+          sources_attempted: sourcesAttempted,
+          redis_unavailable: redisUnavailable,
+          quorum_met: quorumMet,
+          anomalous: true,
+        };
+      }
+    } catch (err) {
+      logger.warn('Cache read failed during anomaly rejection, serving fetched price', { error: err.message });
+    }
   }
 
   if (!redisUnavailable) {
@@ -235,7 +279,36 @@ async function fetchFreshPrice(assetCode, issuer = null, redisUnavailable = fals
     stale_warning: null,
     sources_attempted: sourcesAttempted,
     redis_unavailable: redisUnavailable,
+    quorum_met: quorumMet,
+    anomalous,
   };
+}
+
+/**
+ * Single-flight wrapper around doFetchFreshPrice. Concurrent calls for the
+ * same assetCode:issuer pair while a fetch is already in-flight will await
+ * the same promise instead of each independently hitting all upstream sources.
+ */
+async function fetchFreshPrice(assetCode, issuer = null, redisUnavailable = false) {
+  const normalisedIssuer = issuer || null;
+  const key = `${assetCode}:${normalisedIssuer}`;
+
+  if (inFlight.has(key)) {
+    const existing = inFlight.get(key);
+    const coalescedCount = inFlight.size;
+    logger.debug('Coalesced caller onto in-flight price fetch', {
+      assetCode,
+      issuer: normalisedIssuer,
+      coalesced: coalescedCount,
+    });
+    return existing;
+  }
+
+  const promise = doFetchFreshPrice(assetCode, issuer, redisUnavailable)
+    .finally(() => inFlight.delete(key));
+
+  inFlight.set(key, promise);
+  return promise;
 }
 
 async function refreshAllCachedPrices() {
@@ -297,4 +370,5 @@ module.exports = {
   detectAnomaly,
   fetchFromAllSources,
   getSourceCircuitStates,
+  inFlight,
 };
