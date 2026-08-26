@@ -99,9 +99,13 @@ const webhookDeliveriesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 
+// Stellar Int64 max in stroops, divided by 10_000_000 to get max in whole units
+// that can be safely represented as a JS number
+const MAX_AMOUNT_UNITS = Number(9223372036854775807n / 10000000n);
+
 const recipientSchema = z.object({
   address: stellarPublicKeySchema,
-  amount: z.number().positive(),
+  amount: z.number().positive().max(MAX_AMOUNT_UNITS, `amount exceeds Stellar Int64 ceiling`),
 });
 
 const recipientsSchema = z
@@ -135,7 +139,7 @@ function airdropCreateBodySchema(currentLedger) {
       description: z.string().optional(),
       asset: assetCodeSchema,
       asset_issuer: stellarPublicKeySchema,
-      total_amount: z.number().positive(),
+      total_amount: z.number().positive().max(MAX_AMOUNT_UNITS, `total_amount exceeds Stellar Int64 ceiling`),
       expiry_ledger: expiryLedgerSchema(currentLedger),
       recipients: recipientsSchema.optional().default([]),
     })

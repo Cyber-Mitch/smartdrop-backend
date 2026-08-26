@@ -121,6 +121,9 @@ async function evaluateForAsset(asset, priceUsd) {
       await remove(id);
     } else {
       alert.last_fired_at = new Date().toISOString();
+      if (alert.type === 'change_pct') {
+        alert.baseline_price = priceUsd;
+      }
       await cache.set(alertKey(id), alert);
     }
   }
