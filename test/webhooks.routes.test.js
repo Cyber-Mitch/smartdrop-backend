@@ -197,3 +197,99 @@ describe('GET /api/v1/webhooks/:id/deliveries', () => {
     expect(res.body.deliveries.length).toBeGreaterThan(0);
   });
 });
+
+describe('Full webhook lifecycle (integration)', () => {
+  const app = buildApp();
+
+  test('create → test → update → list deliveries → delete', async () => {
+    // 1. Create
+    const created = await request(app)
+      .post('/api/v1/webhooks')
+      .send({
+        url: 'https://example.com/hook',
+        events: ['pool.created'],
+        secret: 'whsec_lifecycle_test_secret_1234',
+      });
+    expect(created.status).toBe(201);
+    const { id } = created.body;
+
+    // 2. Test delivery
+    mockAxiosPost.mockResolvedValueOnce({ status: 200 });
+    const testRes = await request(app).post(`/api/v1/webhooks/${id}/test`);
+    expect(testRes.status).toBe(202);
+    expect(testRes.body.status).toBe('success');
+
+    // 3. Update active status
+    const patchRes = await request(app)
+      .patch(`/api/v1/webhooks/${id}`)
+      .send({ active: false });
+    expect(patchRes.status).toBe(200);
+    expect(patchRes.body.active).toBe(false);
+
+    // 4. List deliveries
+    const deliveriesRes = await request(app).get(`/api/v1/webhooks/${id}/deliveries`);
+    expect(deliveriesRes.status).toBe(200);
+    expect(deliveriesRes.body.deliveries.length).toBeGreaterThan(0);
+
+    // 5. Get by ID
+    const getRes = await request(app).get(`/api/v1/webhooks/${id}`);
+    expect(getRes.status).toBe(200);
+
+    // 6. Delete
+    const delRes = await request(app).delete(`/api/v1/webhooks/${id}`);
+    expect(delRes.status).toBe(200);
+    expect(delRes.body.deleted).toBe(true);
+
+    // 7. Verify gone
+    const goneRes = await request(app).get(`/api/v1/webhooks/${id}`);
+    expect(goneRes.status).toBe(404);
+  });
+
+  test('multiple webhooks with different event filters', async () => {
+    const wh1 = await request(app)
+      .post('/api/v1/webhooks')
+      .send({ url: 'https://a.com', events: ['pool.created'], secret: 'whsec_aaaaaaaaaaaaaaaa' });
+    const wh2 = await request(app)
+      .post('/api/v1/webhooks')
+      .send({ url: 'https://b.com', events: ['price.alert'], secret: 'whsec_bbbbbbbbbbbbbbbb' });
+    const wh3 = await request(app)
+      .post('/api/v1/webhooks')
+      .send({ url: 'https://c.com', events: ['*'], secret: 'whsec_cccccccccccccccc' });
+
+    expect(wh1.status).toBe(201);
+    expect(wh2.status).toBe(201);
+    expect(wh3.status).toBe(201);
+
+    const list = await request(app).get('/api/v1/webhooks');
+    expect(list.body.data).toHaveLength(3);
+    expect(list.body.pagination.total).toBe(3);
+  });
+
+  test('PATCH returns 404 for unknown webhook', async () => {
+    const res = await request(app)
+      .patch('/api/v1/webhooks/wh_nonexistent')
+      .send({ active: false });
+    expect(res.status).toBe(404);
+  });
+
+  test('GET returns 404 for unknown webhook', async () => {
+    const res = await request(app).get('/api/v1/webhooks/wh_nonexistent');
+    expect(res.status).toBe(404);
+  });
+
+  test('DELETE returns 404 for unknown webhook', async () => {
+    const res = await request(app).delete('/api/v1/webhooks/wh_nonexistent');
+    expect(res.status).toBe(404);
+  });
+
+  test('test delivery returns 202 even when target URL fails (fire-and-forget)', async () => {
+    const created = await request(app)
+      .post('/api/v1/webhooks')
+      .send({ url: 'https://example.com/hook', events: ['*'], secret: 'whsec_aaaaaaaaaaaaaaaa' });
+    mockAxiosPost.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    const res = await request(app).post(`/api/v1/webhooks/${created.body.id}/test`);
+    expect(res.status).toBe(202);
+    expect(res.body.delivery_id).toMatch(/^dlv_/);
+  });
+});

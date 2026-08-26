@@ -95,6 +95,121 @@ describe('CircuitBreaker', () => {
 
     expect(breaker.getState()).toBe(STATES.CLOSED);
   });
+
+  test('treats undefined return as a failure', async () => {
+    const { breaker } = buildBreaker();
+
+    await breaker.call(async () => undefined);
+    expect(breaker.failureCount).toBe(1);
+  });
+
+  test('resets failure count on success in CLOSED state', async () => {
+    const { breaker } = buildBreaker();
+
+    await breaker.call(async () => null);
+    expect(breaker.failureCount).toBe(1);
+
+    await breaker.call(async () => 'ok');
+    expect(breaker.failureCount).toBe(0);
+  });
+
+  test('reset() returns breaker to CLOSED immediately', async () => {
+    const { breaker } = buildBreaker();
+
+    await breaker.call(async () => null);
+    await breaker.call(async () => null);
+    expect(breaker.getState()).toBe(STATES.OPEN);
+
+    breaker.reset();
+    expect(breaker.getState()).toBe(STATES.CLOSED);
+    expect(breaker.failureCount).toBe(0);
+    expect(breaker.openedAt).toBeNull();
+  });
+
+  test('skips calls when half-open probe is already in flight', async () => {
+    const { breaker, advance } = buildBreaker();
+
+    await breaker.call(async () => null);
+    await breaker.call(async () => null);
+    advance(100);
+
+    expect(breaker.getState()).toBe(STATES.HALF_OPEN);
+
+    // First call starts a probe
+    const probe = breaker.call(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      return 'ok';
+    });
+
+    // Second call while probe is in flight should be skipped
+    const skipped = await breaker.call(async () => 'should-not-run');
+    expect(skipped).toBeNull();
+
+    await probe;
+    expect(breaker.getState()).toBe(STATES.CLOSED);
+  });
+
+  test('clamps failureThreshold to minimum of 1', () => {
+    const breaker = new CircuitBreaker('test', { failureThreshold: 0 });
+    expect(breaker.failureThreshold).toBe(1);
+  });
+
+  test('clamps successThreshold to minimum of 1', () => {
+    const breaker = new CircuitBreaker('test', { successThreshold: -5 });
+    expect(breaker.successThreshold).toBe(1);
+  });
+
+  test('clamps timeoutMs to minimum of 1', () => {
+    const breaker = new CircuitBreaker('test', { timeoutMs: -100 });
+    expect(breaker.timeoutMs).toBe(1);
+  });
+
+  test('uses default options when none provided', () => {
+    const breaker = new CircuitBreaker('test');
+    expect(breaker.failureThreshold).toBe(3);
+    expect(breaker.successThreshold).toBe(1);
+    expect(breaker.timeoutMs).toBe(30000);
+  });
+
+  test('isOpen returns false when closed', () => {
+    const { breaker } = buildBreaker();
+    expect(breaker.isOpen()).toBe(false);
+  });
+
+  test('isOpen returns true when open', async () => {
+    const { breaker } = buildBreaker();
+    await breaker.call(async () => null);
+    await breaker.call(async () => null);
+    expect(breaker.isOpen()).toBe(true);
+  });
+
+  test('multiple successes in half-open are needed when successThreshold > 1', async () => {
+    const { breaker, advance } = buildBreaker({ successThreshold: 2 });
+
+    await breaker.call(async () => null);
+    await breaker.call(async () => null);
+    advance(100);
+
+    expect(breaker.getState()).toBe(STATES.HALF_OPEN);
+
+    await breaker.call(async () => 'ok');
+    expect(breaker.getState()).toBe(STATES.HALF_OPEN);
+
+    await breaker.call(async () => 'ok');
+    expect(breaker.getState()).toBe(STATES.CLOSED);
+  });
+
+  test('higher failureThreshold delays opening', async () => {
+    const { breaker } = buildBreaker({ failureThreshold: 5 });
+
+    for (let i = 0; i < 4; i++) {
+      await breaker.call(async () => null);
+    }
+    expect(breaker.getState()).toBe(STATES.CLOSED);
+
+    await breaker.call(async () => null);
+    expect(breaker.getState()).toBe(STATES.OPEN);
+  });
 });
 
 function loadCircuitBreaker() {

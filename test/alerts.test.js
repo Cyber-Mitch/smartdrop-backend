@@ -253,4 +253,77 @@ describe('evaluateAll', () => {
     await alertsService.evaluateAll();
     expect(mockWebhookDeliver).not.toHaveBeenCalled();
   });
+
+  test('evaluates multiple assets independently', async () => {
+    mockStore.set('price:XLM', { price: 0.08 });
+    mockStore.set('price:BTC', { price: 50000 });
+    await makeAlert({ asset: 'XLM', threshold_usd: 0.09, repeat: true });
+    await makeAlert({ asset: 'BTC', threshold_usd: 40000, type: 'above', repeat: true });
+    await alertsService.evaluateAll();
+    expect(mockWebhookDeliver).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('listPaginated', () => {
+  test('returns empty result when no alerts exist', async () => {
+    const result = await alertsService.listPaginated({ offset: 0, limit: 10 });
+    expect(result.alerts).toHaveLength(0);
+    expect(result.total).toBe(0);
+  });
+
+  test('returns paginated subset of alerts', async () => {
+    await makeAlert({ threshold_usd: 0.01 });
+    await makeAlert({ threshold_usd: 0.02 });
+    await makeAlert({ threshold_usd: 0.03 });
+
+    const page1 = await alertsService.listPaginated({ offset: 0, limit: 2 });
+    expect(page1.alerts).toHaveLength(2);
+    expect(page1.total).toBe(3);
+
+    const page2 = await alertsService.listPaginated({ offset: 2, limit: 2 });
+    expect(page2.alerts).toHaveLength(1);
+    expect(page2.total).toBe(3);
+  });
+
+  test('defaults to offset 0 and limit 20', async () => {
+    await makeAlert();
+    const result = await alertsService.listPaginated();
+    expect(result.alerts).toHaveLength(1);
+  });
+});
+
+describe('change_pct negative direction', () => {
+  test('fires when price drops by >= threshold percent', async () => {
+    mockStore.set('price:XLM', { price: 0.10 });
+    await makeAlert({ type: 'change_pct', threshold_usd: 10 });
+    await alertsService.evaluateForAsset('XLM', 0.089);
+    expect(mockWebhookDeliver).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not fire for small negative change', async () => {
+    mockStore.set('price:XLM', { price: 0.10 });
+    await makeAlert({ type: 'change_pct', threshold_usd: 10 });
+    await alertsService.evaluateForAsset('XLM', 0.095);
+    expect(mockWebhookDeliver).not.toHaveBeenCalled();
+  });
+});
+
+describe('alert for different asset', () => {
+  test('does not trigger alert for non-matching asset', async () => {
+    await makeAlert({ asset: 'XLM', threshold_usd: 0.09 });
+    await alertsService.evaluateForAsset('BTC', 0.01);
+    expect(mockWebhookDeliver).not.toHaveBeenCalled();
+  });
+});
+
+describe('repeat: true with change_pct', () => {
+  test('resets baseline_price after firing', async () => {
+    mockStore.set('price:XLM', { price: 0.10 });
+    await makeAlert({ type: 'change_pct', threshold_usd: 10, repeat: true });
+    await alertsService.evaluateForAsset('XLM', 0.12);
+    expect(mockWebhookDeliver).toHaveBeenCalledTimes(1);
+
+    const [alert] = await alertsService.list();
+    expect(alert.baseline_price).toBe(0.12);
+  });
 });
