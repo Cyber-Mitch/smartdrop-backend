@@ -242,7 +242,15 @@ router.post('/airdrops/:id/recipients', validateRouteIdParams, addRecipientsLimi
     }
     assertWithinCeiling(sum, 'total recipient amount');
 
-    await airdropsService.addRecipients(req.params.id, recipients);
+    const duplicates = await airdropsService.addRecipients(req.params.id, recipients);
+    if (duplicates.length > 0) {
+      return next(new AppError(
+        'CONFLICT',
+        'One or more recipient addresses are already registered for this airdrop',
+        409,
+        { duplicate_addresses: duplicates },
+      ));
+    }
     return res.status(201).json({ added: recipients.length });
   } catch (err) {
     logger.error('Add recipients error', { error: err.message });

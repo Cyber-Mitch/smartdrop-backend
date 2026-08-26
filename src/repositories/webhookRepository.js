@@ -20,6 +20,7 @@
 
 const crypto = require('crypto');
 const cache = require('../services/cache');
+const logger = require('../logger');
 
 const IDS_KEY = 'webhooks:ids';
 
@@ -69,30 +70,45 @@ async function create({ url, events, secret, description }) {
 }
 
 async function findById(id) {
-  const record = await cache.get(key(id));
-  return normalize(record);
+  try {
+    const record = await cache.get(key(id));
+    return normalize(record);
+  } catch (err) {
+    logger.error('webhookRepository.findById Redis error', { id, error: err.message });
+    return null;
+  }
 }
 
 /** Every webhook, unpaginated — for internal fan-out (listActiveForEvent
  * below), which needs the complete set to notify every subscriber, not a
  * page of it. Not exposed as a public list endpoint; see list() for that. */
 async function listAll() {
-  const redis = cache.getClient();
-  const ids = await redis.zrevrange(IDS_KEY, 0, -1);
-  const records = await Promise.all(ids.map((id) => cache.get(key(id))));
-  return records.filter(Boolean).map(normalize);
+  try {
+    const redis = cache.getClient();
+    const ids = await redis.zrevrange(IDS_KEY, 0, -1);
+    const records = await Promise.all(ids.map((id) => cache.get(key(id))));
+    return records.filter(Boolean).map(normalize);
+  } catch (err) {
+    logger.error('webhookRepository.listAll Redis error', { error: err.message });
+    return [];
+  }
 }
 
 /** Returns { webhooks, total } — see routes/webhooks.js for how this is
  * wrapped in the canonical pagination envelope. */
 async function list(page = 1, limit = 20) {
-  const redis = cache.getClient();
-  const total = await redis.zcard(IDS_KEY);
-  const start = (page - 1) * limit;
-  const end = start + limit - 1;
-  const ids = await redis.zrevrange(IDS_KEY, start, end);
-  const records = await Promise.all(ids.map((id) => cache.get(key(id))));
-  return { webhooks: records.filter(Boolean).map(normalize), total };
+  try {
+    const redis = cache.getClient();
+    const total = await redis.zcard(IDS_KEY);
+    const start = (page - 1) * limit;
+    const end = start + limit - 1;
+    const ids = await redis.zrevrange(IDS_KEY, start, end);
+    const records = await Promise.all(ids.map((id) => cache.get(key(id))));
+    return { webhooks: records.filter(Boolean).map(normalize), total };
+  } catch (err) {
+    logger.error('webhookRepository.list Redis error', { error: err.message });
+    return { webhooks: [], total: 0 };
+  }
 }
 
 async function listActiveForEvent(eventType, matcher) {

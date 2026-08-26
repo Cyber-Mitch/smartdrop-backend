@@ -35,9 +35,13 @@
 
 const crypto = require('crypto');
 const cache = require('../services/cache');
+const logger = require('../logger');
 
 const RETRY_QUEUE_KEY = 'webhooks:retries';
 const RECENT_DELIVERIES_LIMIT = 100;
+// Delivery records are kept for 30 days, after which they're no longer useful
+// for debugging and their unbounded accumulation would exhaust Redis memory.
+const DELIVERY_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 // Atomically claims up to ARGV[2] due members (score <= ARGV[1]) from the
 // sorted set at KEYS[1] and removes them in the same round trip, so
@@ -86,29 +90,40 @@ async function create({ webhook_id, event_id, event_type }) {
   };
 
   const redis = cache.getClient();
-  await cache.set(key(id), record);
+  await cache.set(key(id), record, DELIVERY_TTL_SECONDS);
   await redis.zadd(indexKey(webhook_id), Date.now(), id);
   await redis.zremrangebyrank(indexKey(webhook_id), 0, -(RECENT_DELIVERIES_LIMIT + 1));
+  await redis.expire(indexKey(webhook_id), DELIVERY_TTL_SECONDS);
   return record;
 }
 
 async function findById(id) {
-  return cache.get(key(id));
+  try {
+    return await cache.get(key(id));
+  } catch (err) {
+    logger.error('deliveryRepository.findById Redis error', { id, error: err.message });
+    return null;
+  }
 }
 
 async function update(id, patch) {
   const existing = await cache.get(key(id));
   if (!existing) return null;
   const next = { ...existing, ...patch, id: existing.id };
-  await cache.set(key(id), next);
+  await cache.set(key(id), next, DELIVERY_TTL_SECONDS);
   return next;
 }
 
 async function listByWebhook(webhookId, limit = 50) {
-  const redis = cache.getClient();
-  const ids = await redis.zrevrange(indexKey(webhookId), 0, Math.max(0, limit - 1));
-  const records = await Promise.all(ids.map((id) => cache.get(key(id))));
-  return records.filter(Boolean);
+  try {
+    const redis = cache.getClient();
+    const ids = await redis.zrevrange(indexKey(webhookId), 0, Math.max(0, limit - 1));
+    const records = await Promise.all(ids.map((id) => cache.get(key(id))));
+    return records.filter(Boolean);
+  } catch (err) {
+    logger.error('deliveryRepository.listByWebhook Redis error', { webhookId, error: err.message });
+    return [];
+  }
 }
 
 async function scheduleRetry(deliveryId, nextRetryAtMs) {
