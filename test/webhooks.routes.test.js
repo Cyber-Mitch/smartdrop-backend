@@ -1,5 +1,8 @@
 'use strict';
 
+process.env.WEBHOOK_RATELIMIT_MAX = '1000';
+process.env.WEBHOOK_RATELIMIT_WINDOW = '60';
+
 const express = require('express');
 const request = require('supertest');
 const { createCacheMock } = require('./helpers/cacheMock');
@@ -13,7 +16,13 @@ jest.mock('../src/logger', () => ({
 }));
 
 const mockAxiosPost = jest.fn();
-jest.mock('axios', () => ({ post: (...args) => mockAxiosPost(...args) }));
+const mockAxiosHead = jest.fn();
+const mockAxiosGet = jest.fn();
+jest.mock('axios', () => ({
+  post: (...args) => mockAxiosPost(...args),
+  head: (...args) => mockAxiosHead(...args),
+  get: (...args) => mockAxiosGet(...args),
+}));
 
 const webhooksRouter = require('../src/routes/webhooks');
 const dispatcher = require('../src/services/webhookDispatcher');
@@ -22,12 +31,17 @@ function buildApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/v1', webhooksRouter);
+  app.use(errorHandler);
   return app;
 }
 
 beforeEach(() => {
   reset();
   mockAxiosPost.mockReset();
+  mockAxiosHead.mockReset();
+  mockAxiosGet.mockReset();
+  mockAxiosHead.mockResolvedValue({ status: 200 });
+  mockAxiosGet.mockResolvedValue({ status: 200 });
 });
 
 describe('POST /api/v1/webhooks', () => {

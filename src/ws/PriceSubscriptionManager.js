@@ -1,9 +1,11 @@
 'use strict';
 
+const config = require('../config');
 const logger = require('../logger');
 
 const MAX_ASSETS_PER_CLIENT = 5;
-const MAX_CONNECTIONS = 100;
+const MAX_CONNECTIONS = config.ws.maxConnections;
+const MAX_CONNECTIONS_PER_IP = config.ws.maxConnectionsPerIp;
 const PING_INTERVAL_MS = 30_000;
 const MAX_MISSED_PINGS = 3;
 const PRICE_CHANGE_THRESHOLD_PCT = 0.1;
@@ -33,20 +35,39 @@ function updateGauge(delta) {
 class PriceSubscriptionManager {
   constructor() {
     this._clients = new Map(); // ws → { assets, missedPings }
+    this._clientIpBySocket = new Map(); // ws → string
+    this._connectionsByIp = new Map(); // ip → number
     this._previousPrices = new Map(); // assetKey → number
     this._pingTimer = null;
   }
 
+  _getClientIp(req) {
+    const forwardedFor = req?.headers?.['x-forwarded-for'];
+    if (Array.isArray(forwardedFor) && forwardedFor.length > 0) {
+      return forwardedFor[0].split(',')[0].trim();
+    }
+    if (typeof forwardedFor === 'string') {
+      return forwardedFor.split(',')[0].trim();
+    }
+    const socket = req?.socket;
+    return socket?.remoteAddress || 'unknown';
+  }
+
   /** Register a new WebSocket connection. Returns false when at capacity. */
-  add(ws) {
-    if (this._clients.size >= MAX_CONNECTIONS) {
+  add(ws, req = {}) {
+    const clientIp = this._getClientIp(req).replace(/^::ffff:/, '');
+    const currentByIp = this._connectionsByIp.get(clientIp) || 0;
+
+    if (this._clients.size >= MAX_CONNECTIONS || currentByIp >= MAX_CONNECTIONS_PER_IP) {
       ws.close(1013, 'Max connections reached');
       return false;
     }
 
     this._clients.set(ws, { assets: new Set(), missedPings: 0 });
+    this._clientIpBySocket.set(ws, clientIp);
+    this._connectionsByIp.set(clientIp, currentByIp + 1);
     updateGauge(1);
-    logger.info('WS client connected', { total: this._clients.size });
+    logger.info('WS client connected', { ip: clientIp, total: this._clients.size });
 
     ws.on('message', (raw) => this._handleMessage(ws, raw));
     ws.on('close', () => this._remove(ws));
@@ -60,9 +81,17 @@ class PriceSubscriptionManager {
 
   _remove(ws) {
     if (!this._clients.has(ws)) return;
+    const clientIp = this._clientIpBySocket.get(ws) || 'unknown';
     this._clients.delete(ws);
+    this._clientIpBySocket.delete(ws);
+    const nextCount = (this._connectionsByIp.get(clientIp) || 1) - 1;
+    if (nextCount <= 0) {
+      this._connectionsByIp.delete(clientIp);
+    } else {
+      this._connectionsByIp.set(clientIp, nextCount);
+    }
     updateGauge(-1);
-    logger.info('WS client disconnected', { total: this._clients.size });
+    logger.info('WS client disconnected', { ip: clientIp, total: this._clients.size });
   }
 
   _handleMessage(ws, raw) {
