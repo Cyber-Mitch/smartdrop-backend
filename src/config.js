@@ -70,6 +70,7 @@ const env = cleanEnv(rawEnv, {
   REDIS_URL: url({ devDefault: 'redis://localhost:6379' }),
   DATABASE_URL: url({ devDefault: databaseDevDefault }),
   STELLAR_HORIZON_URL: url({ default: 'https://horizon.stellar.org' }),
+  SOROBAN_RPC_URL: url({ default: 'https://soroban-rpc.mainnet.stellar.gateway.fm' }),
   USDC_ISSUER: stellarAddress({
     default: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335AX2OBFLDTQLNUEHRGPTM6RIA',
   }),
@@ -113,13 +114,12 @@ const parsedWatchedAssets = Array.isArray(env.WATCHED_ASSETS)
 module.exports = {
   nodeEnv: env.NODE_ENV,
   port: env.PORT,
-  databaseUrl: env.DATABASE_URL,
   redis: {
     url: env.REDIS_URL,
   },
   stellar: {
     horizonUrl: env.STELLAR_HORIZON_URL,
-    sorobanRpcUrl: process.env.SOROBAN_RPC_URL || 'https://soroban-rpc.mainnet.stellar.gateway.fm',
+    sorobanRpcUrl: env.SOROBAN_RPC_URL,
     usdcIssuer,
   },
   indexer: {

@@ -140,9 +140,8 @@ app.get('/health', (req, res) => {
       },
     },
     database: {
-      configured: true,
-      checked: false,
-      status: 'unused',
+      configured: false,
+      status: 'removed',
     },
     price_source_circuits: priceOracle.getSourceCircuitStates(),
     leader_election: {
