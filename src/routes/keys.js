@@ -41,7 +41,7 @@ router.delete('/keys/:id', validateRouteIdParams, async (req, res, next) => {
   try {
     const deleted = await apiKeys.revokeKey(req.params.id);
     if (!deleted) {
-      return next(new AppError('NOT_FOUND', 'API key not found', 404));
+      return next(new AppError('API_KEY_NOT_FOUND', 'API key not found', 404));
     }
     return res.json({ deleted: true, key: deleted });
   } catch (err) {

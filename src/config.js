@@ -145,6 +145,10 @@ module.exports = {
     pollIntervalMs: parseInt(process.env.INDEXER_POLL_INTERVAL_MS, 10) || 5000,
     pollLimit: parseInt(process.env.INDEXER_POLL_LIMIT, 10) || 100,
     startLedger: parseInt(process.env.INDEXER_START_LEDGER, 10) || 0,
+    // Adaptive polling and lag alerting (issue #255).
+    maxPollIntervalMs: parseInt(process.env.INDEXER_MAX_POLL_INTERVAL_MS, 10) || 5 * 60 * 1000,
+    backoffFactor: parseFloat(process.env.INDEXER_BACKOFF_FACTOR) || 2,
+    lagAlertThreshold: parseInt(process.env.INDEXER_LAG_ALERT_THRESHOLD, 10) || 100,
   },
   coingecko: {
     apiKey: env.COINGECKO_API_KEY,

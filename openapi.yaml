@@ -50,8 +50,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
               example:
-                error: Service unavailable
-                message: Redis connection failed
+                error:
+                  code: SERVICE_UNAVAILABLE
+                  message: Redis connection failed
+                  request_id: req_V1StGXR8Z5jdHi6BmyT
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -205,8 +207,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/PriceNotFoundResponse'
               example:
-                error: Price not available
-                message: 'No price data found for UNKNOWN'
+                error:
+                  code: NOT_FOUND
+                  message: 'No price data found for UNKNOWN'
+                  request_id: req_V1StGXR8Z5jdHi6BmyT
                 asset_code: UNKNOWN
                 issuer: null
                 price_usd: null
@@ -1434,16 +1438,60 @@ components:
 
     ErrorResponse:
       type: object
+      description: >-
+        Canonical error envelope. Clients should switch on `error.code`,
+        which is stable, rather than on `error.message`, which may be
+        reworded at any time.
       properties:
         error:
-          type: string
-          description: Machine-readable error type
-        message:
-          type: string
-          description: Human-readable error description
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code
+              enum:
+                - VALIDATION_ERROR
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - CONFLICT
+                - PAYLOAD_TOO_LARGE
+                - UNSUPPORTED_MEDIA_TYPE
+                - RATE_LIMITED
+                - INTERNAL_ERROR
+                - UPSTREAM_ERROR
+                - SERVICE_UNAVAILABLE
+                - AIRDROP_NOT_FOUND
+                - AIRDROP_NOT_INDEXED
+                - RECIPIENT_LIMIT_EXCEEDED
+                - CSV_INVALID_ENCODING
+                - CSV_MISSING_COLUMNS
+                - CSV_MALFORMED
+                - CSV_EMPTY
+                - WEBHOOK_NOT_FOUND
+                - WEBHOOK_LIMIT_EXCEEDED
+                - ALERT_NOT_FOUND
+                - API_KEY_NOT_FOUND
+                - PRICE_UNAVAILABLE
+                - INDEXER_UNAVAILABLE
+              example: WEBHOOK_NOT_FOUND
+            message:
+              type: string
+              description: Human-readable error description
+              example: Webhook not found
+            request_id:
+              type: string
+              description: Correlates this response with server logs
+              example: req_V1StGXR8Z5jdHi6BmyT
+            details:
+              type: object
+              additionalProperties: true
+              description: Optional structured context specific to the error code
+          required:
+            - code
+            - message
       required:
         - error
-        - message
 
     ApiKey:
       type: object
@@ -1572,21 +1620,6 @@ components:
                 type: string
               issue:
                 type: string
-      required:
-        - error
-        - message
-
-    RateLimitInfo:
-      type: object
-      properties:
-        error:
-          type: string
-          example: Too many requests
-        message:
-          type: string
-          example: Rate limit exceeded. Try again in 42 seconds.
-        retry_after_seconds:
-          type: integer
       required:
         - error
         - message
@@ -1824,8 +1857,10 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           example:
-            error: Missing or invalid API key
-            message: Missing or invalid API key
+            error:
+              code: UNAUTHORIZED
+              message: Missing or invalid API key
+              request_id: req_V1StGXR8Z5jdHi6BmyT
     NotFound:
       description: Resource not found
       content:
@@ -1833,8 +1868,10 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           example:
-            error: Webhook endpoint not found
-            message: Webhook endpoint not found
+            error:
+              code: WEBHOOK_NOT_FOUND
+              message: Webhook endpoint not found
+              request_id: req_V1StGXR8Z5jdHi6BmyT
     UnprocessableEntity:
       description: Request body is semantically invalid
       content:
@@ -1842,18 +1879,23 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           example:
-            error: Unprocessable entity
-            message: One or more field values are invalid
+            error:
+              code: VALIDATION_ERROR
+              message: One or more field values are invalid
+              request_id: req_V1StGXR8Z5jdHi6BmyT
     RateLimited:
       description: Rate limit exceeded
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/RateLimitInfo'
+            $ref: '#/components/schemas/ErrorResponse'
           example:
-            error: Too many requests
-            message: Rate limit exceeded. Try again in 42 seconds.
-            retry_after_seconds: 42
+            error:
+              code: RATE_LIMITED
+              message: Rate limit exceeded. Try again in 42 seconds.
+              request_id: req_V1StGXR8Z5jdHi6BmyT
+              details:
+                retry_after_seconds: 42
       headers:
         Retry-After:
           schema:
@@ -1884,5 +1926,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           example:
-            error: Internal server error
-            message: An unexpected error occurred
+            error:
+              code: INTERNAL_ERROR
+              message: An unexpected error occurred
+              request_id: req_V1StGXR8Z5jdHi6BmyT

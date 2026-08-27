@@ -26,6 +26,7 @@ jest.mock('axios', () => ({
 
 const webhooksRouter = require('../src/routes/webhooks');
 const dispatcher = require('../src/services/webhookDispatcher');
+const { errorHandler } = require('../src/middleware/errorHandler');
 
 function buildApp() {
   const app = express();
