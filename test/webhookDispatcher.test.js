@@ -449,3 +449,75 @@ describe('delivery trace ids', () => {
     expect(delivery.trace_id).toMatch(/^trace_/);
   });
 });
+
+describe('request id propagation into webhook deliveries (issue #250)', () => {
+  const { requestContext } = require('../src/middleware/requestId');
+
+  test('stamps the originating request id onto the delivery record', async () => {
+    await createWebhook();
+    mockAxiosPost.mockResolvedValueOnce({ status: 200 });
+
+    const [{ delivery }] = await requestContext.run({ requestId: 'req_from_api' }, () =>
+      dispatcher.dispatch({
+        event_type: 'pool.assets_locked',
+        event_id: 'evt_req_id',
+        data: { pool_id: 'p1' },
+      }));
+
+    expect(delivery.request_id).toBe('req_from_api');
+    await expect(deliveryRepo.findById(delivery.id))
+      .resolves.toEqual(expect.objectContaining({ request_id: 'req_from_api' }));
+  });
+
+  test('forwards the request id to the receiver as an X-Request-Id header', async () => {
+    await createWebhook();
+    mockAxiosPost.mockResolvedValueOnce({ status: 200 });
+
+    await requestContext.run({ requestId: 'req_header' }, () =>
+      dispatcher.dispatch({
+        event_type: 'pool.assets_locked',
+        event_id: 'evt_req_header',
+        data: { pool_id: 'p1' },
+      }));
+
+    const [, , opts] = mockAxiosPost.mock.calls[0];
+    expect(opts.headers['X-Request-Id']).toBe('req_header');
+  });
+
+  test('a retry hours later still carries the request id of the original call', async () => {
+    await createWebhook();
+    mockAxiosPost.mockResolvedValueOnce({ status: 500 });
+
+    const [{ delivery }] = await requestContext.run({ requestId: 'req_retried' }, () =>
+      dispatcher.dispatch({
+        event_type: 'pool.assets_locked',
+        event_id: 'evt_retry_req_id',
+        data: { pool_id: 'p1' },
+      }));
+    expect(delivery.status).toBe('pending');
+
+    // The retry runs from the background worker, outside any request context.
+    mockAxiosPost.mockResolvedValueOnce({ status: 200 });
+    const retried = await dispatcher.attempt(delivery.id);
+
+    expect(retried.status).toBe('success');
+    expect(retried.request_id).toBe('req_retried');
+    const [, , opts] = mockAxiosPost.mock.calls[1];
+    expect(opts.headers['X-Request-Id']).toBe('req_retried');
+  });
+
+  test('omits the header for deliveries with no originating request', async () => {
+    await createWebhook();
+    mockAxiosPost.mockResolvedValueOnce({ status: 200 });
+
+    const [{ delivery }] = await dispatcher.dispatch({
+      event_type: 'pool.assets_locked',
+      event_id: 'evt_no_req',
+      data: { pool_id: 'p1' },
+    });
+
+    expect(delivery.request_id).toBeNull();
+    const [, , opts] = mockAxiosPost.mock.calls[0];
+    expect(opts.headers['X-Request-Id']).toBeUndefined();
+  });
+});

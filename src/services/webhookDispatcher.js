@@ -124,14 +124,18 @@ function shouldRetry(responseStatus, networkError) {
   return false;
 }
 
-function buildHeaders(secret, body, eventType, deliveryId) {
-  return {
+function buildHeaders(secret, body, eventType, deliveryId, requestId) {
+  const headers = {
     'Content-Type': 'application/json',
     'User-Agent': USER_AGENT,
     'X-SmartDrop-Event': eventType,
     'X-SmartDrop-Delivery': deliveryId,
     'X-SmartDrop-Signature': signature.sign(secret, body),
   };
+  // Lets receivers correlate a delivery with the API request that caused
+  // it when reporting problems back to us (issue #250).
+  if (requestId) headers['X-Request-Id'] = requestId;
+  return headers;
 }
 
 function generateDeliveryTraceId() {
@@ -202,7 +206,7 @@ async function attempt(deliveryId) {
       occurred_at: delivery.created_at,
     };
     const body = JSON.stringify(payload);
-    const headers = buildHeaders(webhook.secret, body, delivery.event_type, delivery.id);
+    const headers = buildHeaders(webhook.secret, body, delivery.event_type, delivery.id, delivery.request_id);
 
     const attempts = delivery.attempts + 1;
     let responseStatus = null;
@@ -229,6 +233,7 @@ async function attempt(deliveryId) {
       logger.info('Webhook delivered', {
         delivery_id: delivery.id,
         trace_id: traceId,
+        request_id: delivery.request_id,
         webhook_id: webhook.id,
         attempts,
         status: responseStatus,
@@ -255,6 +260,7 @@ async function attempt(deliveryId) {
       logger.warn('Webhook delivery failed, retry scheduled', {
         delivery_id: delivery.id,
         trace_id: traceId,
+        request_id: delivery.request_id,
         webhook_id: webhook.id,
         attempts,
         error: errorMessage,
@@ -274,6 +280,7 @@ async function attempt(deliveryId) {
     logger.error('Webhook delivery failed permanently', {
       delivery_id: delivery.id,
       trace_id: traceId,
+      request_id: delivery.request_id,
       webhook_id: webhook.id,
       attempts,
       error: errorMessage,
@@ -290,10 +297,15 @@ async function attempt(deliveryId) {
 }
 
 async function deliverToWebhook(webhook, eventType, eventId, payload) {
+  // Propagate the originating request's id onto the delivery record so a
+  // webhook that fires hours later on a retry is still traceable back to
+  // the API call that caused it (issue #250).
+  const requestId = requestContext.getStore()?.requestId;
   const delivery = await deliveryRepo.create({
     webhook_id: webhook.id,
     event_id: eventId,
     event_type: eventType,
+    request_id: requestId && requestId !== 'system' ? requestId : null,
   });
   await deliveryRepo.update(delivery.id, { payload });
   return attempt(delivery.id);
