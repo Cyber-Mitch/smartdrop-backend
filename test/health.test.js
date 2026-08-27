@@ -305,3 +305,88 @@ describe('webhookRetryWorker.getHealth() – grace period', () => {
     expect(h.stalled).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// GET /health – webhook retry queue depth (issue #235)
+// ---------------------------------------------------------------------------
+
+describe('GET /health – webhook_retry_worker queue depth', () => {
+  function mockWorkerWithQueueStats(mockQueueStats) {
+    jest.mock('../src/jobs/webhookRetryWorker', () => ({
+      start: jest.fn(),
+      stop: jest.fn(),
+      tick: jest.fn(),
+      getHealth: () => ({ healthy: true, lastSuccessAt: Date.now(), lastError: null, stalled: false }),
+      getQueueStats: mockQueueStats,
+    }));
+  }
+
+  test('reports pending retries, last batch size, and average delivery latency', async () => {
+    jest.resetModules();
+    mockWorkerWithQueueStats(async () => ({
+      pendingRetries: 4,
+      lastBatchSize: 2,
+      avgDeliveryLatencyMs: 12.5,
+      totalRetriesProcessed: 9,
+    }));
+
+    const app = loadApp();
+    const res = await request(app).get('/health');
+
+    expect(res.status).toBe(200);
+    expect(res.body.jobs.webhook_retry_worker).toEqual(expect.objectContaining({
+      pending_retries: 4,
+      last_batch_size: 2,
+      avg_delivery_latency_ms: 12.5,
+      total_retries_processed: 9,
+    }));
+  });
+
+  test('keeps the existing liveness fields alongside the queue depth fields', async () => {
+    jest.resetModules();
+    mockWorkerWithQueueStats(async () => ({
+      pendingRetries: 0,
+      lastBatchSize: 0,
+      avgDeliveryLatencyMs: null,
+      totalRetriesProcessed: 0,
+    }));
+
+    const app = loadApp();
+    const res = await request(app).get('/health');
+
+    expect(res.body.jobs.webhook_retry_worker).toEqual(expect.objectContaining({
+      healthy: true,
+      stalled: false,
+      pending_retries: 0,
+    }));
+  });
+
+  test('reports null pending retries rather than zero when the queue cannot be read', async () => {
+    jest.resetModules();
+    mockWorkerWithQueueStats(async () => ({
+      pendingRetries: null,
+      lastBatchSize: null,
+      avgDeliveryLatencyMs: null,
+      totalRetriesProcessed: null,
+    }));
+
+    const app = loadApp();
+    const res = await request(app).get('/health');
+
+    expect(res.status).toBe(200);
+    expect(res.body.jobs.webhook_retry_worker.pending_retries).toBeNull();
+  });
+
+  test('still answers when reading the queue stats throws', async () => {
+    jest.resetModules();
+    mockWorkerWithQueueStats(async () => {
+      throw new Error('redis unreachable');
+    });
+
+    const app = loadApp();
+    const res = await request(app).get('/health');
+
+    expect(res.status).toBe(200);
+    expect(res.body.jobs.webhook_retry_worker.pending_retries).toBeNull();
+  });
+});
