@@ -114,6 +114,7 @@ const env = cleanEnv(rawEnv, {
   // requestLogger.js, in addition to the routine per-request log (issue
   // #244) — so slow requests are greppable/alertable without external APM.
   SLOW_REQUEST_THRESHOLD_MS: num({ default: 1000 }),
+  ROUTE_TIMEOUT_MS: num({ default: 30000 }),
   // Per-API-key rate limit tiers (issue #251). Each authenticated key is
   // metered in its own bucket sized by the key's tier, so one abusive key
   // can no longer exhaust the shared IP-keyed bucket for everybody else.
@@ -226,6 +227,7 @@ module.exports = {
   },
   sentryDsn: env.SENTRY_DSN,
   slowRequestThresholdMs: env.SLOW_REQUEST_THRESHOLD_MS,
+  routeTimeoutMs: env.ROUTE_TIMEOUT_MS,
   webhookSecretEncryptionKey: env.WEBHOOK_SECRET_ENCRYPTION_KEY,
   corsAllowedOrigins: (process.env.CORS_ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:3001')
     .split(',')

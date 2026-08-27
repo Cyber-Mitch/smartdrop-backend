@@ -17,6 +17,7 @@ const {
   routeIdParamsSchema,
 } = require('../validation/schemas');
 const buildRateLimit = require('../middleware/rateLimit');
+const { routeTimeout } = require('../middleware/timeout');
 const { StrKey } = require('stellar-sdk');
 const { paginateResponse } = require('../utils/paginate');
 
@@ -137,7 +138,7 @@ async function parseCSV(buffer) {
   return results;
 }
 
-router.post('/airdrops', createAirdropLimit, validateWithCurrentLedger(airdropCreateBodySchema), async (req, res, next) => {
+router.post('/airdrops', routeTimeout(), createAirdropLimit, validateWithCurrentLedger(airdropCreateBodySchema), async (req, res, next) => {
   try {
     const airdrop = await airdropsService.create(req.validated.body);
     return res.status(201).json(airdrop);
@@ -210,7 +211,7 @@ router.post('/airdrops/:id/cancel', validateRouteIdParams, async (req, res, next
   }
 });
 
-router.post('/airdrops/:id/recipients', validateRouteIdParams, addRecipientsLimit, uploadRecipientsFile, validateRecipientBody, async (req, res, next) => {
+router.post('/airdrops/:id/recipients', routeTimeout(), validateRouteIdParams, addRecipientsLimit, uploadRecipientsFile, validateRecipientBody, async (req, res, next) => {
   try {
     const airdrop = await airdropsService.get(req.params.id);
     if (!airdrop) {

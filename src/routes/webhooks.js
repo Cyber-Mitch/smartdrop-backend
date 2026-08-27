@@ -9,6 +9,7 @@ const dispatcher = require('../services/webhookDispatcher');
 const signatureService = require('../services/webhookSignature');
 const { probeReachability } = require('../services/webhook');
 const buildRateLimit = require('../middleware/rateLimit');
+const { routeTimeout } = require('../middleware/timeout');
 const AppError = require('../errors/AppError');
 const { paginateResponse } = require('../utils/paginate');
 const {
@@ -68,7 +69,7 @@ function publicView(webhook) {
   };
 }
 
-router.post('/webhooks', validate(webhookCreateBodySchema), async (req, res, next) => {
+router.post('/webhooks', routeTimeout(), validate(webhookCreateBodySchema), async (req, res, next) => {
   try {
     const body = req.validated.body;
     const ownerIp = clientIpFromRequest(req);
@@ -153,7 +154,7 @@ router.delete('/webhooks/:id', validateRouteIdParams, async (req, res, next) => 
   }
 });
 
-router.post('/webhooks/:id/test', validateRouteIdParams, testLimit, async (req, res, next) => {
+router.post('/webhooks/:id/test', routeTimeout(), validateRouteIdParams, testLimit, async (req, res, next) => {
   try {
     const delivery = await dispatcher.sendTest(req.params.id);
     if (!delivery) return next(new AppError('NOT_FOUND', 'Webhook not found', 404));
