@@ -132,6 +132,7 @@ const parsedWatchedAssets = Array.isArray(env.WATCHED_ASSETS)
 module.exports = {
   nodeEnv: env.NODE_ENV,
   port: env.PORT,
+  databaseUrl: env.DATABASE_URL,
   redis: {
     url: env.REDIS_URL,
   },
