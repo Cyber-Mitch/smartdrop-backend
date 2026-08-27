@@ -49,6 +49,10 @@ function clientIpFromRequest(req) {
 
 router.use('/webhooks', manageLimit);
 
+router.get('/webhooks/metrics', async (req, res) => {
+  return res.json(dispatcher.getMetrics());
+});
+
 function publicView(webhook) {
   if (!webhook) return null;
   return {

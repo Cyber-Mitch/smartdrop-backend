@@ -94,6 +94,7 @@ const env = cleanEnv(rawEnv, {
   PRICE_ANOMALY_THRESHOLD_PCT: num({ default: 20 }),
   PRICE_MIN_SOURCES: num({ default: 2 }),
   PRICE_ANOMALY_ACTION: str({ default: 'warn', choices: ['warn', 'reject'] }),
+  PRICE_SOURCE_PRIORITY: str({ default: '' }),
   PRICE_REFRESH_MAX_CYCLE_MS: num({ default: 90000 }),
   CIRCUIT_BREAKER_FAILURE_THRESHOLD: num({ default: 3 }),
   CIRCUIT_BREAKER_SUCCESS_THRESHOLD: num({ default: 1 }),
@@ -157,6 +158,9 @@ module.exports = {
     anomalyThresholdPercent: env.PRICE_ANOMALY_THRESHOLD_PCT,
     minSources: env.PRICE_MIN_SOURCES,
     anomalyAction: env.PRICE_ANOMALY_ACTION,
+    sourcePriority: env.PRICE_SOURCE_PRIORITY
+      ? env.PRICE_SOURCE_PRIORITY.split(',').map((s) => s.trim()).filter(Boolean)
+      : [],
     refreshMaxCycleMs: env.PRICE_REFRESH_MAX_CYCLE_MS,
     circuitBreaker: {
       failureThreshold: env.CIRCUIT_BREAKER_FAILURE_THRESHOLD,

@@ -30,6 +30,7 @@ const apiDocsRouter = require('./routes/apiDocs');
 const { router: metricsRouter, requestMetricsMiddleware } = require('./routes/metrics');
 
 const priceWebSocket = require('./ws/priceWebSocket');
+const webhookDispatcher = require('./services/webhookDispatcher');
 
 // Wrap background jobs with leader-election coordination so that only one
 // replica across the deployment runs each job at any given time.
@@ -145,6 +146,7 @@ app.get('/health', async (req, res) => {
     },
     database,
     price_source_circuits: priceOracle.getSourceCircuitStates(),
+    webhook_metrics: webhookDispatcher.getMetrics(),
     leader_election: {
       instance_id: config.leaderElection.instanceId,
       lease_ttl_ms: config.leaderElection.leaseTtlMs,
@@ -176,12 +178,22 @@ app.use(errorHandler);
 
 function shutdown(signal) {
   return async () => {
-    logger.info(`${signal} received, shutting down`);
+    const inFlightDeliveries = webhookDispatcher.getInFlightCount();
+    logger.info(`${signal} received, shutting down`, {
+      in_flight_webhook_deliveries: inFlightDeliveries,
+    });
 
     // Stop leader-aware jobs (releases leases gracefully)
     await wrappedPriceRefreshJob.stop();
     await wrappedWebhookRetryWorker.stop();
     await wrappedAirdropExpiryJob.stop();
+
+    const remainingDeliveries = webhookDispatcher.getInFlightCount();
+    if (remainingDeliveries > 0) {
+      logger.warn('Shutdown complete with in-flight webhook deliveries still pending', {
+        remaining: remainingDeliveries,
+      });
+    }
 
     // Stop non-leader-elected services
     indexerPoller.stop();
