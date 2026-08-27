@@ -15,7 +15,7 @@ const breakerOptions = config.price.circuitBreaker;
 // upstream sources (CoinGecko, CoinMarketCap, Stellar DEX) on a cache miss.
 const inFlight = new Map();
 
-const SOURCES = [
+const ALL_SOURCES = [
   {
     name: 'stellar_dex',
     fetch: stellarDex.fetchPrice,
@@ -37,6 +37,18 @@ const SOURCES = [
     getCircuitState: coinmarketcap.getCircuitState,
   },
 ];
+
+function sortByPriority(sources, priority) {
+  if (!priority || priority.length === 0) return sources;
+  const order = new Map(priority.map((name, i) => [name, i]));
+  return [...sources].sort((a, b) => {
+    const ia = order.has(a.name) ? order.get(a.name) : Infinity;
+    const ib = order.has(b.name) ? order.get(b.name) : Infinity;
+    return ia - ib;
+  });
+}
+
+const SOURCES = sortByPriority(ALL_SOURCES, config.price.sourcePriority);
 
 /**
  * Circuit-breaker state for every source that has one (currently coingecko

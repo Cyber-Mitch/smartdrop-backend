@@ -955,18 +955,82 @@ paths:
   /ws:
     get:
       operationId: websocketEndpoint
-      summary: Real-time event stream (planned)
+      summary: Real-time price stream
       description: |
-        **⚠️ Planned — not yet implemented.**
-        WebSocket endpoint for streaming real-time SmartDrop events
-        (price updates, airdrop status changes, webhook delivery logs).
+        WebSocket endpoint for streaming real-time price updates.
+
+        **Connection:**
+        ```
+        ws://<host>/ws
+        Authorization: Bearer <api_key>
+        ```
+
+        After the WebSocket handshake completes, the client sends JSON
+        messages to manage subscriptions. The server pushes price updates
+        whenever a watched asset's price changes by more than 0.1%.
+
+        **Client → Server messages:**
+
+        Subscribe to asset price updates (max 5 assets per client):
+        ```json
+        { "action": "subscribe", "assets": ["XLM", "USDC:GA5ZSEJYB37J..."] }
+        ```
+
+        Unsubscribe from assets:
+        ```json
+        { "action": "unsubscribe", "assets": ["XLM"] }
+        ```
+
+        Respond to server heartbeat pings:
+        ```json
+        { "action": "pong" }
+        ```
+
+        **Server → Client messages:**
+
+        Confirmation of subscription change:
+        ```json
+        { "type": "subscribed", "assets": ["XLM", "USDC:GA5ZSEJYB37J..."] }
+        ```
+
+        Price update (pushed when change > 0.1%):
+        ```json
+        {
+          "type": "price_update",
+          "asset": "XLM",
+          "price_usd": 0.1234,
+          "previous_price_usd": 0.1230,
+          "change_pct": 0.3252,
+          "source": "coingecko",
+          "timestamp": "2026-08-24T12:00:00.000Z"
+        }
+        ```
+
+        Heartbeat ping (client must respond with `{"action":"pong"}`):
+        ```json
+        { "type": "ping" }
+        ```
+
+        Error:
+        ```json
+        { "type": "error", "message": "Subscription cap reached (5 max)" }
+        ```
+
+        **Limits:**
+        - Max connections: 100 (configurable via `WS_MAX_CONNECTIONS`)
+        - Max connections per IP: 5 (`WS_MAX_CONNECTIONS_PER_IP`)
+        - Max assets per client: 5
+        - Idle timeout: 90s (3 missed pings at 30s intervals)
       tags:
         - WebSocket
-      x-draft: true
       x-websocket: true
+      security:
+        - BearerAuth: []
       responses:
         '101':
-          description: WebSocket protocol upgrade (future)
+          description: WebSocket protocol upgrade
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '400':
           $ref: '#/components/responses/ValidationError'
 

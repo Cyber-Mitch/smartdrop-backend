@@ -13,6 +13,79 @@ const { requestContext } = require('../middleware/requestId');
 
 const USER_AGENT = 'SmartDrop-Webhooks/1.0';
 
+// ── Delivery metrics (in-memory, reset on process restart) ──────────────
+const metrics = {
+  _deliveries: new Map(), // webhook_id → { total, success, failed, totalAttempts, totalLatencyMs }
+  _inFlight: new Set(),   // delivery IDs currently being attempted
+  _aggregate: { total: 0, success: 0, failed: 0, totalAttempts: 0, totalLatencyMs: 0 },
+};
+
+function _ensureWebhookMetrics(webhookId) {
+  if (!metrics._deliveries.has(webhookId)) {
+    metrics._deliveries.set(webhookId, {
+      total: 0, success: 0, failed: 0, totalAttempts: 0, totalLatencyMs: 0,
+    });
+  }
+  return metrics._deliveries.get(webhookId);
+}
+
+function recordDeliveryStart(deliveryId, webhookId) {
+  metrics._inFlight.add(deliveryId);
+  _ensureWebhookMetrics(webhookId);
+}
+
+function recordDeliveryEnd(deliveryId, webhookId, { success, attempts, latencyMs }) {
+  metrics._inFlight.delete(deliveryId);
+  const wm = _ensureWebhookMetrics(webhookId);
+  const ag = metrics._aggregate;
+
+  wm.total += 1;
+  wm.totalAttempts += attempts;
+  wm.totalLatencyMs += latencyMs;
+  ag.total += 1;
+  ag.totalAttempts += attempts;
+  ag.totalLatencyMs += latencyMs;
+
+  if (success) {
+    wm.success += 1;
+    ag.success += 1;
+  } else {
+    wm.failed += 1;
+    ag.failed += 1;
+  }
+}
+
+function getMetrics() {
+  const perWebhook = {};
+  for (const [webhookId, m] of metrics._deliveries) {
+    perWebhook[webhookId] = {
+      total: m.total,
+      success: m.success,
+      failed: m.failed,
+      success_rate: m.total > 0 ? parseFloat((m.success / m.total).toFixed(4)) : null,
+      retry_rate: m.total > 0 ? parseFloat(((m.totalAttempts - m.total) / m.total).toFixed(4)) : null,
+      avg_latency_ms: m.total > 0 ? parseFloat((m.totalLatencyMs / m.total).toFixed(1)) : null,
+    };
+  }
+  const ag = metrics._aggregate;
+  return {
+    in_flight: metrics._inFlight.size,
+    aggregate: {
+      total: ag.total,
+      success: ag.success,
+      failed: ag.failed,
+      success_rate: ag.total > 0 ? parseFloat((ag.success / ag.total).toFixed(4)) : null,
+      retry_rate: ag.total > 0 ? parseFloat(((ag.totalAttempts - ag.total) / ag.total).toFixed(4)) : null,
+      avg_latency_ms: ag.total > 0 ? parseFloat((ag.totalLatencyMs / ag.total).toFixed(1)) : null,
+    },
+    per_webhook: perWebhook,
+  };
+}
+
+function getInFlightCount() {
+  return metrics._inFlight.size;
+}
+
 /**
  * Computes the retry delay for a webhook delivery that has completed
  * `attemptsCompleted` attempts, using exponential backoff with "equal
@@ -135,6 +208,9 @@ async function attempt(deliveryId) {
     let responseStatus = null;
     let networkError = null;
 
+    const deliveryStartTime = Date.now();
+    recordDeliveryStart(deliveryId, webhook.id);
+
     try {
       const res = await postOnce(webhook.url, headers, body, webhook.timeoutMs);
       responseStatus = res.status;
@@ -144,8 +220,12 @@ async function attempt(deliveryId) {
 
     const succeeded = responseStatus != null && responseStatus >= 200 && responseStatus < 300;
     const nowIso = new Date().toISOString();
+    const latencyMs = Date.now() - deliveryStartTime;
+
+    // Metrics will be finalized after we determine final status below
 
     if (succeeded) {
+      recordDeliveryEnd(deliveryId, webhook.id, { success: true, attempts, latencyMs });
       logger.info('Webhook delivered', {
         delivery_id: delivery.id,
         trace_id: traceId,
@@ -168,6 +248,7 @@ async function attempt(deliveryId) {
     const hasAttemptsLeft = attempts < config.webhooks.maxAttempts;
 
     if (retryable && hasAttemptsLeft) {
+      recordDeliveryEnd(deliveryId, webhook.id, { success: false, attempts, latencyMs });
       const delayMs = backoffMs(attempts);
       const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
       await deliveryRepo.scheduleRetry(delivery.id, Date.now() + delayMs);
@@ -189,6 +270,7 @@ async function attempt(deliveryId) {
       });
     }
 
+    recordDeliveryEnd(deliveryId, webhook.id, { success: false, attempts, latencyMs });
     logger.error('Webhook delivery failed permanently', {
       delivery_id: delivery.id,
       trace_id: traceId,
@@ -281,4 +363,4 @@ async function sendTest(webhookId) {
   return deliverToWebhook(webhook, eventType, payload.event_id, payload);
 }
 
-module.exports = { dispatch, attempt, sendTest, backoffMs, shouldRetry };
+module.exports = { dispatch, attempt, sendTest, backoffMs, shouldRetry, getMetrics, getInFlightCount };
