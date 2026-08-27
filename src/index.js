@@ -3,6 +3,7 @@
 const express = require('express');
 const helmet = require('helmet');
 const config = require('./config');
+const { version: appVersion } = require('../package.json');
 const logger = require('./logger');
 const cache = require('./services/cache');
 const priceOracle = require('./services/priceOracle');
@@ -13,10 +14,10 @@ const { createLeaderElection } = require('./services/leaderElection');
 const { makeLeaderAwareJob } = require('./jobs/leaderAwareJob');
 const { warmCache } = require('./startup/cacheWarm');
 const buildCorsMiddleware = require('./middleware/cors');
-const buildRateLimit = require('./middleware/rateLimit');
+const { buildRateLimit, buildApiKeyRateLimit } = require('./middleware/rateLimit');
 const { requestIdMiddleware } = require('./middleware/requestId');
 const requestLoggerMiddleware = require('./middleware/requestLogger');
-const { requireApiKey } = require('./middleware/auth');
+const { requireApiKey, attachApiKey } = require('./middleware/auth');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { checkDatabase } = require('./services/dbHealth');
 const pricesRouter = require('./routes/prices');
@@ -74,12 +75,34 @@ app.use(helmet());
 app.use(buildCorsMiddleware(config.corsAllowedOrigins));
 app.use(express.json({ limit: config.airdrops.jsonMaxBytes }));
 
+const EMPTY_QUEUE_STATS = {
+  pendingRetries: null,
+  lastBatchSize: null,
+  avgDeliveryLatencyMs: null,
+  totalRetriesProcessed: null,
+};
+
+async function readWebhookRetryQueueStats() {
+  if (typeof webhookRetryWorker.getQueueStats !== 'function') return EMPTY_QUEUE_STATS;
+  try {
+    return await webhookRetryWorker.getQueueStats();
+  } catch (err) {
+    logger.warn('Could not read webhook retry queue stats', { error: err.message });
+    return EMPTY_QUEUE_STATS;
+  }
+}
+
 app.get('/health', async (req, res) => {
   const redisConnected = cache.isConnected();
   const priceRefreshHealth = wrappedPriceRefreshJob.getHealth();
   const webhookWorkerHealth = wrappedWebhookRetryWorker.getHealth();
   const airdropExpiryHealth = wrappedAirdropExpiryJob.getHealth();
   const database = await checkDatabase();
+  // Queue depth for the retry worker (issue #235) — "the worker is alive"
+  // says nothing about whether retries are piling up behind it. Health must
+  // still answer if this telemetry read fails, so a failure degrades to
+  // nulls rather than failing the whole endpoint.
+  const webhookRetryQueue = await readWebhookRetryQueueStats();
 
   // Compute overall status:
   //   unhealthy – Redis is down, or a job is stalled past its grace period
@@ -131,6 +154,12 @@ app.get('/health', async (req, res) => {
         leader: webhookWorkerHealth.leader,
         leader_instance_id: webhookWorkerHealth.leaderInstanceId,
         leader_since: webhookWorkerHealth.leaderSince,
+        // null pending_retries means Redis could not be read, which is not
+        // the same as an empty queue.
+        pending_retries: webhookRetryQueue.pendingRetries,
+        last_batch_size: webhookRetryQueue.lastBatchSize,
+        avg_delivery_latency_ms: webhookRetryQueue.avgDeliveryLatencyMs,
+        total_retries_processed: webhookRetryQueue.totalRetriesProcessed,
       },
       airdrop_expiry: {
         healthy: airdropExpiryHealth.healthy,
@@ -155,12 +184,19 @@ app.get('/health', async (req, res) => {
   });
 });
 
+const apiKeyLimit = buildApiKeyRateLimit({ keyPrefix: 'apikey' });
+
 const globalApiLimit = buildRateLimit({
   windowSeconds: Math.floor(config.rateLimit.windowMs / 1000),
   max: config.rateLimit.max,
   keyPrefix: 'api',
 });
 
+// Resolve any presented API key first so the per-key limiter can meter it,
+// then fall through to the IP-keyed limiter for unauthenticated callers.
+// Authentication itself is still enforced per-route by requireApiKey.
+app.use('/api/v1', attachApiKey());
+app.use('/api/v1', apiKeyLimit);
 app.use('/api/v1', globalApiLimit);
 app.use('/api/v1', pricesRouter);
 app.use('/api/v1', keysRouter);
@@ -205,11 +241,53 @@ function shutdown(signal) {
   };
 }
 
+/**
+ * Redacts credentials from a connection URL so it can be logged (issue #236).
+ *
+ * Returns a placeholder rather than the raw string if parsing fails, since a
+ * malformed URL that we cannot parse is also one whose password we cannot
+ * locate and strip.
+ */
+function sanitizeUrl(rawUrl) {
+  if (!rawUrl) return null;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.password) parsed.password = '****';
+    if (parsed.username) parsed.username = '****';
+    return parsed.toString();
+  } catch {
+    return '[unparseable]';
+  }
+}
+
+/**
+ * Logs a one-shot startup summary (issue #236).
+ *
+ * Previously startup logged only the port, so an operator looking at a
+ * running instance could not tell which build it was, which Node it ran on,
+ * or what it was configured to watch without shelling in.
+ */
+function logStartupBanner() {
+  logger.info(`SmartDrop backend running on port ${config.port}`, {
+    app_version: appVersion,
+    node_version: process.version,
+    node_env: config.nodeEnv,
+    port: config.port,
+    redis_url: sanitizeUrl(config.redis.url),
+    database_url: sanitizeUrl(process.env.DATABASE_URL),
+    watched_assets_count: config.watchedAssets.length,
+    watched_assets: config.watchedAssets,
+    indexer_enabled: config.indexer.enabled,
+    instance_id: config.leaderElection.instanceId,
+    log_level: process.env.LOG_LEVEL || config.nodeEnv,
+  });
+}
+
 async function startServer() {
   await warmCache(config.watchedAssets);
 
   server = app.listen(config.port, () => {
-    logger.info(`SmartDrop backend running on port ${config.port}`);
+    logStartupBanner();
     priceWebSocket.attach(server);
 
     // Start leader-aware background jobs.
@@ -272,6 +350,8 @@ module.exports = {
   },
   startServer,
   // Exposed for testing
+  logStartupBanner,
+  sanitizeUrl,
   wrappedPriceRefreshJob,
   wrappedWebhookRetryWorker,
   wrappedAirdropExpiryJob,

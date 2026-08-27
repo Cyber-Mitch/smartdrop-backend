@@ -23,11 +23,12 @@ router.get('/keys', async (_req, res, next) => {
 
 router.post('/keys', validate(keyCreateBodySchema), async (req, res, next) => {
   try {
-    const { label, scopes } = req.validated.body;
+    const { label, scopes, tier } = req.validated.body;
 
     const created = await apiKeys.createKey({
       label,
       scopes: scopes || ['default'],
+      tier,
     });
     return res.status(201).json(created);
   } catch (err) {
