@@ -2,25 +2,47 @@ const Redis = require('ioredis');
 const config = require('../config');
 const logger = require('../logger');
 
+const MAX_RETRIES = 10;
+const RETRY_DELAY_MS = 1000;
+const CONNECT_TIMEOUT_MS = 5000;
+const COMMAND_TIMEOUT_MS = 3000;
+
 let client = null;
+let reconnectAttempts = 0;
 
 function getClient() {
   if (!client) {
     client = new Redis(config.redis.url, {
       lazyConnect: true,
       enableOfflineQueue: false,
+      connectTimeout: CONNECT_TIMEOUT_MS,
+      commandTimeout: COMMAND_TIMEOUT_MS,
+      retryStrategy(times) {
+        if (times > MAX_RETRIES) {
+          logger.error('Redis max reconnection attempts reached', { attempts: times });
+          return null;
+        }
+        const delay = Math.min(times * RETRY_DELAY_MS, 30000);
+        logger.warn('Redis reconnecting', { attempt: times, delayMs: delay });
+        return delay;
+      },
+      maxRetriesPerRequest: 3,
     });
     client.on('error', (err) => {
-      logger.error('Redis connection error', { error: err.message });
+      reconnectAttempts++;
+      logger.error('Redis connection error', { error: err.message, reconnectAttempts });
     });
     client.on('connect', () => {
+      reconnectAttempts = 0;
       logger.info('Redis connected');
     });
     client.on('ready', () => {
+      reconnectAttempts = 0;
       logger.info('Redis ready');
     });
-    // Kick off the initial connection without blocking or throwing here;
-    // errors are surfaced via the 'error' event above.
+    client.on('close', () => {
+      logger.warn('Redis connection closed');
+    });
     client.connect().catch(() => {});
   }
   return client;
