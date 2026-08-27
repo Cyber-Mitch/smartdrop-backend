@@ -17,6 +17,7 @@
  *     next_retry_at    timestamptz,
  *     response_status  int,
  *     trace_id         text not null,
+ *     request_id       text,                 -- originating HTTP request (issue #250)
  *     created_at       timestamptz not null default now()
  *   )
  *
@@ -77,7 +78,7 @@ function generateTraceId() {
   return `trace_${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
 }
 
-async function create({ webhook_id, event_id, event_type, trace_id }) {
+async function create({ webhook_id, event_id, event_type, trace_id, request_id }) {
   const id = generateId();
   const now = new Date().toISOString();
   const record = {
@@ -92,6 +93,10 @@ async function create({ webhook_id, event_id, event_type, trace_id }) {
     next_retry_at: null,
     response_status: null,
     trace_id: trace_id || generateTraceId(),
+    // Correlates this delivery back to the HTTP request that triggered it
+    // (issue #250). Null for deliveries originated by background jobs,
+    // which have no inbound request.
+    request_id: request_id || null,
     created_at: now,
   };
 
@@ -161,6 +166,22 @@ async function popDueRetries(nowMs, max = 25) {
   return redis.popDueRetriesAtomic(RETRY_QUEUE_KEY, nowMs, max);
 }
 
+/**
+ * Number of deliveries currently sitting in the retry queue (issue #235).
+ *
+ * Counts the whole sorted set, not just entries already due, so operators
+ * see retries backing up before they come due rather than after.
+ */
+async function countPendingRetries() {
+  try {
+    const redis = cache.getClient();
+    return await redis.zcard(RETRY_QUEUE_KEY);
+  } catch (err) {
+    logger.error('deliveryRepository.countPendingRetries Redis error', { error: err.message });
+    return null;
+  }
+}
+
 async function cancelRetry(deliveryId) {
   const redis = cache.getClient();
   await redis.zrem(RETRY_QUEUE_KEY, deliveryId);
@@ -173,5 +194,6 @@ module.exports = {
   listByWebhook,
   scheduleRetry,
   popDueRetries,
+  countPendingRetries,
   cancelRetry,
 };
