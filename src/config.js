@@ -264,6 +264,7 @@ module.exports = {
       windowSeconds: parseInt(process.env.WEBHOOK_TEST_RATELIMIT_WINDOW, 10) || 60,
       max: parseInt(process.env.WEBHOOK_TEST_RATELIMIT_MAX, 10) || 5,
     },
+    orderedDelivery: process.env.WEBHOOK_ORDERED_DELIVERY === 'true',
   },
   ws: {
     maxConnections: parseInt(process.env.WS_MAX_CONNECTIONS, 10) || 100,

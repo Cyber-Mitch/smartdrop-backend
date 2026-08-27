@@ -206,6 +206,43 @@ class PriceSubscriptionManager {
     }
   }
 
+  /**
+   * Gracefully drain all connected clients during server shutdown.
+   * Sends a close frame with a warning reason, then force-closes any
+   * connections still open after `drainTimeoutMs` (issue #248).
+   */
+  drain(drainTimeoutMs = 5000) {
+    this.stopHeartbeat();
+    const clientCount = this._clients.size;
+    if (clientCount === 0) return Promise.resolve();
+
+    logger.info('Draining WebSocket connections', { count: clientCount, drain_timeout_ms: drainTimeoutMs });
+
+    for (const [ws] of this._clients) {
+      try {
+        ws.close(1001, 'Server shutting down');
+      } catch {
+        // already closed or errored — ignore
+      }
+    }
+
+    return new Promise((resolve) => {
+      const deadline = setTimeout(() => {
+        for (const [ws] of this._clients) {
+          try { ws.terminate(); } catch { /* ignore */ }
+        }
+        this._clients.clear();
+        this._clientIpBySocket.clear();
+        this._connectionsByIp.clear();
+        updateGauge(-clientCount);
+        logger.info('WebSocket drain complete (force-closed remaining)', { force_closed: clientCount });
+        resolve();
+      }, drainTimeoutMs);
+
+      deadline.unref();
+    });
+  }
+
   get connectionCount() {
     return this._clients.size;
   }

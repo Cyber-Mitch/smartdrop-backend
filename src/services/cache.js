@@ -6,6 +6,7 @@ const MAX_RETRIES = 10;
 const RETRY_DELAY_MS = 1000;
 const CONNECT_TIMEOUT_MS = 5000;
 const COMMAND_TIMEOUT_MS = 3000;
+const COMMAND_QUEUE_WARN_THRESHOLD = parseInt(process.env.REDIS_COMMAND_QUEUE_WARN_THRESHOLD, 10) || 100;
 
 let client = null;
 let reconnectAttempts = 0;
@@ -14,7 +15,7 @@ function getClient() {
   if (!client) {
     client = new Redis(config.redis.url, {
       lazyConnect: true,
-      enableOfflineQueue: false,
+      enableOfflineQueue: true,
       connectTimeout: CONNECT_TIMEOUT_MS,
       commandTimeout: COMMAND_TIMEOUT_MS,
       retryStrategy(times) {
@@ -28,6 +29,7 @@ function getClient() {
       },
       maxRetriesPerRequest: 3,
     });
+
     client.on('error', (err) => {
       reconnectAttempts++;
       logger.error('Redis connection error', { error: err.message, reconnectAttempts });
@@ -52,8 +54,17 @@ function isConnected() {
   return client !== null && client.status === 'ready';
 }
 
+function getCommandQueueLength() {
+  if (!client) return 0;
+  return client.commandQueue ? client.commandQueue.length : 0;
+}
+
 async function get(key) {
   const redis = getClient();
+  const queueLen = getCommandQueueLength();
+  if (queueLen > COMMAND_QUEUE_WARN_THRESHOLD) {
+    logger.warn('Redis command queue depth high', { queue_length: queueLen, threshold: COMMAND_QUEUE_WARN_THRESHOLD });
+  }
   const data = await redis.get(key);
   if (!data) return null;
   try {
@@ -65,6 +76,10 @@ async function get(key) {
 
 async function set(key, value, ttlSeconds) {
   const redis = getClient();
+  const queueLen = getCommandQueueLength();
+  if (queueLen > COMMAND_QUEUE_WARN_THRESHOLD) {
+    logger.warn('Redis command queue depth high', { queue_length: queueLen, threshold: COMMAND_QUEUE_WARN_THRESHOLD });
+  }
   const serialized = JSON.stringify(value);
   if (ttlSeconds) {
     await redis.setex(key, ttlSeconds, serialized);
@@ -85,4 +100,4 @@ async function disconnect() {
   }
 }
 
-module.exports = { get, set, del, disconnect, getClient, isConnected };
+module.exports = { get, set, del, disconnect, getClient, isConnected, getCommandQueueLength };
