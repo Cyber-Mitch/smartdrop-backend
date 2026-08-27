@@ -452,55 +452,6 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /api/v1/indexer/status:
-    get:
-      operationId: getIndexerStatus
-      summary: Indexer service status
-      description: |
-        Returns the current status and ledger height of the on-chain indexer service.
-        This endpoint is rate limited to 1 request per second per IP.
-      tags:
-        - Indexer
-      responses:
-        '200':
-          description: Indexer status
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum:
-                      - syncing
-                      - synced
-                      - error
-                  current_ledger:
-                    type: integer
-                  latest_ledger:
-                    type: integer
-                  last_indexed_at:
-                    type: string
-                    format: date-time
-              example:
-                status: synced
-                current_ledger: 52489123
-                latest_ledger: 52489123
-                last_indexed_at: '2026-06-27T12:00:00.000Z'
-        '503':
-          description: Indexer is not responding
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: Indexer unavailable
-                message: Indexer service is not responding
-        '429':
-          $ref: '#/components/responses/RateLimited'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
   /api/v1/airdrops:
     post:
       operationId: createAirdrop
@@ -922,7 +873,9 @@ paths:
     get:
       operationId: getIndexerStatus
       summary: Indexer service status
-      description: Returns the current status, ledger height, and lag of the on-chain indexer.
+      description: |
+        Returns the current status, ledger height, and lag of the on-chain indexer.
+        This endpoint is rate limited to 1 request per second per IP.
       tags:
         - Indexer
       responses:
@@ -949,6 +902,8 @@ paths:
                   ledger_lag:
                     type: integer
                     nullable: true
+        '429':
+          $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -1510,6 +1465,17 @@ components:
             type: string
           example:
             - webhooks:write
+        tier:
+          type: string
+          enum:
+            - free
+            - pro
+            - admin
+          description: >-
+            Rate limit tier for this key. Each key is metered in its own
+            fixed-window bucket sized by its tier, so one key exhausting its
+            limit does not affect any other key.
+          example: free
         created_at:
           type: string
           format: date-time
@@ -1541,6 +1507,15 @@ components:
             - default
           example:
             - webhooks:write
+        tier:
+          type: string
+          enum:
+            - free
+            - pro
+            - admin
+          default: free
+          description: Rate limit tier for the new key. Defaults to free.
+          example: pro
       required:
         - label
 
@@ -1835,7 +1810,6 @@ components:
         - webhook_url
         - webhook_secret
 
-  parameters:
   responses:
     ValidationError:
       description: Request validation failed
@@ -1897,6 +1871,12 @@ components:
           schema:
             type: integer
           description: Unix timestamp when the window resets
+        X-RateLimit-Tier:
+          schema:
+            type: string
+          description: >-
+            Rate limit tier the limit was applied from. Only present when the
+            request was metered per API key rather than per IP.
     InternalError:
       description: Internal server error
       content:

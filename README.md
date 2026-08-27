@@ -288,7 +288,27 @@ Each price source (`stellar_dex`, `coingecko`, `coinmarketcap`) gets one circuit
 | `LEASE_TTL_MS` | Leader lease TTL in milliseconds — how long a lease is valid without renewal | 15000 | No |
 | `LEASE_RENEW_INTERVAL_MS` | How often the leader renews its lease (and followers check to acquire) | 5000 | No |
 | `LOG_LEVEL` | Logging level: `debug`, `info`, `warn`, or `error` | info | No |
+| `API_KEY_RATELIMIT_WINDOW_SECONDS` | Per-API-key rate-limit window in seconds | 60 | No |
+| `API_KEY_RATELIMIT_FREE_MAX` | Requests per window for `free`-tier keys | 100 | No |
+| `API_KEY_RATELIMIT_PRO_MAX` | Requests per window for `pro`-tier keys | 1000 | No |
+| `API_KEY_RATELIMIT_ADMIN_MAX` | Requests per window for `admin`-tier keys | 10000 | No |
 
+
+---
+
+## Observability
+
+### Startup banner
+
+On startup the server logs a single summary line so an operator can tell what is running without shelling in: application version, Node version, `NODE_ENV`, port, watched asset count and codes, whether the indexer is enabled, the leader-election instance id, and the configured log level.
+
+Redis and database URLs are included with their credentials stripped — a URL that cannot be parsed is logged as `[unparseable]` rather than verbatim, since a URL we cannot parse is also one whose password we cannot locate and remove.
+
+### Request ID correlation
+
+Every request is assigned an id (or adopts an inbound `X-Request-Id`), returned to the caller in the `X-Request-ID` response header and included in JSON response bodies as `request_id`. The id flows through all layers via `AsyncLocalStorage`, so every log line emitted while handling that request carries it automatically — as both `requestId` and the snake_case `request_id` alias — with no manual threading through service and repository calls.
+
+The id is also stamped onto webhook delivery records and forwarded to receivers as an `X-Request-Id` header. Because it is persisted on the delivery, a retry that fires hours later still reports the request that originally caused it. Deliveries originated by background jobs have no inbound request and carry `null`.
 
 ---
 
@@ -379,7 +399,21 @@ DELETE /api/v1/keys/:id
 
 ```
 
-`POST /api/v1/keys` returns the raw `api_key` only once. Stored keys are hashed with SHA-256 and listed with metadata only (`label`, `created_at`, `last_used_at`, `scopes`, and `key_prefix`).
+`POST /api/v1/keys` returns the raw `api_key` only once. Stored keys are hashed with SHA-256 and listed with metadata only (`label`, `created_at`, `last_used_at`, `scopes`, `tier`, and `key_prefix`).
+
+#### Per-key rate limit tiers
+
+Every authenticated request is metered in a bucket keyed by the API key itself, not by IP, so one abusive key can no longer consume the capacity of every other key behind the same address. Each key carries a `tier` that sizes its bucket:
+
+| Tier | Default limit | Environment variable |
+|------|---------------|----------------------|
+| `free` | 100 requests / minute | `API_KEY_RATELIMIT_FREE_MAX` |
+| `pro` | 1000 requests / minute | `API_KEY_RATELIMIT_PRO_MAX` |
+| `admin` | 10000 requests / minute | `API_KEY_RATELIMIT_ADMIN_MAX` |
+
+The window is set by `API_KEY_RATELIMIT_WINDOW_SECONDS` (default 60). Pass `tier` when creating a key; omit it and the key gets `free`. Keys created before tiers existed also resolve to `free` rather than being locked out.
+
+Every metered response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, and `X-RateLimit-Tier`. Exceeding the limit returns `429` with a `Retry-After` header. As with the per-IP limiter, a Redis outage fails open — a cache problem must not lock every consumer out of the platform.
 
 ### Webhook Endpoints
 
@@ -429,6 +463,15 @@ Returns the overall health of the service and its dependencies.
 | `last_error` | Error message from the last failed tick, or `null` |
 | `stalled` | `true` when no successful tick has occurred within 2× the job interval |
 
+**Additional `jobs.webhook_retry_worker` fields** — queue depth, so operators can see retries backing up rather than only that the worker is alive:
+
+| Field | Description |
+|-------|-------------|
+| `pending_retries` | Deliveries currently queued for retry. `null` means Redis could not be read, which is not the same as an empty queue |
+| `last_batch_size` | Number of retries claimed on the most recent tick |
+| `avg_delivery_latency_ms` | Mean time per retry attempt since process start, or `null` before the first attempt |
+| `total_retries_processed` | Retry attempts made since process start |
+
 **Example response:**
 
 ```json
@@ -447,7 +490,11 @@ Returns the overall health of the service and its dependencies.
       "healthy": true,
       "last_success_at": "2024-01-15T10:29:58.000Z",
       "last_error": null,
-      "stalled": false
+      "stalled": false,
+      "pending_retries": 4,
+      "last_batch_size": 2,
+      "avg_delivery_latency_ms": 12.5,
+      "total_retries_processed": 91
     }
   },
   "database": { "configured": true, "checked": false, "status": "unused" },
