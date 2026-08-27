@@ -312,8 +312,21 @@ async function deliverToWebhook(webhook, eventType, eventId, payload) {
 }
 
 const DISPATCH_CONCURRENCY = parseInt(process.env.WEBHOOK_DISPATCH_CONCURRENCY, 10) || 10;
+const ORDERED_DELIVERY = process.env.WEBHOOK_ORDERED_DELIVERY === 'true';
 
 async function processBatch(batch, eventType, eventId, payload) {
+  if (ORDERED_DELIVERY) {
+    const results = [];
+    for (const webhook of batch) {
+      try {
+        const value = await deliverToWebhook(webhook, eventType, eventId, payload);
+        results.push({ status: 'fulfilled', value });
+      } catch (reason) {
+        results.push({ status: 'rejected', reason });
+      }
+    }
+    return results;
+  }
   return Promise.allSettled(
     batch.map((webhook) => deliverToWebhook(webhook, eventType, eventId, payload))
   );

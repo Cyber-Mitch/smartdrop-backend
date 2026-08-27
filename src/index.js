@@ -31,6 +31,7 @@ const apiDocsRouter = require('./routes/apiDocs');
 const { router: metricsRouter, requestMetricsMiddleware } = require('./routes/metrics');
 
 const priceWebSocket = require('./ws/priceWebSocket');
+const subscriptionManager = require('./ws/PriceSubscriptionManager');
 const webhookDispatcher = require('./services/webhookDispatcher');
 
 // Wrap background jobs with leader-election coordination so that only one
@@ -94,6 +95,7 @@ async function readWebhookRetryQueueStats() {
 
 app.get('/health', async (req, res) => {
   const redisConnected = cache.isConnected();
+  const redisQueueDepth = cache.getCommandQueueLength();
   const priceRefreshHealth = wrappedPriceRefreshJob.getHealth();
   const webhookWorkerHealth = wrappedWebhookRetryWorker.getHealth();
   const airdropExpiryHealth = wrappedAirdropExpiryJob.getHealth();
@@ -131,6 +133,7 @@ app.get('/health', async (req, res) => {
     circuits: priceOracle.getCircuitStates(),
     redis: {
       connected: redisConnected,
+      command_queue_depth: redisQueueDepth,
     },
     jobs: {
       price_refresh: {
@@ -215,8 +218,10 @@ app.use(errorHandler);
 function shutdown(signal) {
   return async () => {
     const inFlightDeliveries = webhookDispatcher.getInFlightCount();
+    const wsConnections = subscriptionManager.connectionCount;
     logger.info(`${signal} received, shutting down`, {
       in_flight_webhook_deliveries: inFlightDeliveries,
+      ws_connections: wsConnections,
     });
 
     // Stop leader-aware jobs (releases leases gracefully)
@@ -233,7 +238,10 @@ function shutdown(signal) {
 
     // Stop non-leader-elected services
     indexerPoller.stop();
-    require('./ws/PriceSubscriptionManager').stopHeartbeat();
+
+    // Gracefully drain WebSocket connections: broadcast close frame,
+    // then force-close any still open after the drain timeout (issue #248).
+    await subscriptionManager.drain(5000);
 
     if (server) server.close();
     await cache.disconnect();
