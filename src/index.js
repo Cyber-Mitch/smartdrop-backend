@@ -98,6 +98,7 @@ async function readWebhookRetryQueueStats() {
 app.get('/health', async (req, res) => {
   const redisConnected = cache.isConnected();
   const redisQueueDepth = cache.getCommandQueueLength();
+  const redisConcurrency = cache.getConcurrencyStats();
   const priceRefreshHealth = wrappedPriceRefreshJob.getHealth();
   const webhookWorkerHealth = wrappedWebhookRetryWorker.getHealth();
   const airdropExpiryHealth = wrappedAirdropExpiryJob.getHealth();
@@ -136,6 +137,12 @@ app.get('/health', async (req, res) => {
     redis: {
       connected: redisConnected,
       command_queue_depth: redisQueueDepth,
+      concurrency: redisConcurrency,
+    },
+    websocket: {
+      connections: subscriptionManager.connectionCount,
+      draining: subscriptionManager.isDraining,
+      drain_stats: subscriptionManager.drainStats,
     },
     jobs: {
       price_refresh: {

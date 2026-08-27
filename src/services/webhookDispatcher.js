@@ -124,7 +124,7 @@ function shouldRetry(responseStatus, networkError) {
   return false;
 }
 
-function buildHeaders(secret, body, eventType, deliveryId, requestId) {
+function buildHeaders(secret, body, eventType, deliveryId, requestId, sequence) {
   const headers = {
     'Content-Type': 'application/json',
     'User-Agent': USER_AGENT,
@@ -132,6 +132,7 @@ function buildHeaders(secret, body, eventType, deliveryId, requestId) {
     'X-SmartDrop-Delivery': deliveryId,
     'X-SmartDrop-Signature': signature.sign(secret, body),
   };
+  if (sequence != null) headers['X-SmartDrop-Sequence'] = String(sequence);
   // Lets receivers correlate a delivery with the API request that caused
   // it when reporting problems back to us (issue #250).
   if (requestId) headers['X-Request-Id'] = requestId;
@@ -175,7 +176,7 @@ async function postOnce(url, headers, body, timeoutMs) {
   });
 }
 
-async function attempt(deliveryId) {
+async function attempt(deliveryId, sequence) {
   const delivery = await deliveryRepo.findById(deliveryId);
   if (!delivery) {
     logger.warn('Delivery missing, dropping retry', { delivery_id: deliveryId });
@@ -206,7 +207,8 @@ async function attempt(deliveryId) {
       occurred_at: delivery.created_at,
     };
     const body = JSON.stringify(payload);
-    const headers = buildHeaders(webhook.secret, body, delivery.event_type, delivery.id, delivery.request_id);
+    const seq = sequence ?? delivery.sequence;
+    const headers = buildHeaders(webhook.secret, body, delivery.event_type, delivery.id, delivery.request_id, seq);
 
     const attempts = delivery.attempts + 1;
     let responseStatus = null;
@@ -296,7 +298,7 @@ async function attempt(deliveryId) {
   });
 }
 
-async function deliverToWebhook(webhook, eventType, eventId, payload) {
+async function deliverToWebhook(webhook, eventType, eventId, payload, sequence) {
   // Propagate the originating request's id onto the delivery record so a
   // webhook that fires hours later on a retry is still traceable back to
   // the API call that caused it (issue #250).
@@ -307,19 +309,19 @@ async function deliverToWebhook(webhook, eventType, eventId, payload) {
     event_type: eventType,
     request_id: requestId && requestId !== 'system' ? requestId : null,
   });
-  await deliveryRepo.update(delivery.id, { payload });
-  return attempt(delivery.id);
+  await deliveryRepo.update(delivery.id, { payload, sequence });
+  return attempt(delivery.id, sequence);
 }
 
 const DISPATCH_CONCURRENCY = parseInt(process.env.WEBHOOK_DISPATCH_CONCURRENCY, 10) || 10;
 const ORDERED_DELIVERY = process.env.WEBHOOK_ORDERED_DELIVERY === 'true';
 
-async function processBatch(batch, eventType, eventId, payload) {
+async function processBatch(batch, eventType, eventId, payload, sequence) {
   if (ORDERED_DELIVERY) {
     const results = [];
     for (const webhook of batch) {
       try {
-        const value = await deliverToWebhook(webhook, eventType, eventId, payload);
+        const value = await deliverToWebhook(webhook, eventType, eventId, payload, sequence);
         results.push({ status: 'fulfilled', value });
       } catch (reason) {
         results.push({ status: 'rejected', reason });
@@ -328,7 +330,7 @@ async function processBatch(batch, eventType, eventId, payload) {
     return results;
   }
   return Promise.allSettled(
-    batch.map((webhook) => deliverToWebhook(webhook, eventType, eventId, payload))
+    batch.map((webhook) => deliverToWebhook(webhook, eventType, eventId, payload, sequence))
   );
 }
 
@@ -368,7 +370,7 @@ async function dispatch({ event_type: eventType, event_id: eventId, data }) {
   const allResults = [];
   for (let i = 0; i < targets.length; i += DISPATCH_CONCURRENCY) {
     const batch = targets.slice(i, i + DISPATCH_CONCURRENCY);
-    const batchResults = await processBatch(batch, eventType, eventId, payload);
+    const batchResults = await processBatch(batch, eventType, eventId, payload, sequence);
     allResults.push(...batchResults);
   }
 
@@ -394,7 +396,7 @@ async function sendTest(webhookId) {
     occurred_at: new Date().toISOString(),
     data: { test: true, message: 'This is a test delivery from SmartDrop' },
   };
-  return deliverToWebhook(webhook, eventType, payload.event_id, payload);
+  return deliverToWebhook(webhook, eventType, payload.event_id, payload, null);
 }
 
 module.exports = { dispatch, attempt, sendTest, backoffMs, shouldRetry, getMetrics, getInFlightCount };

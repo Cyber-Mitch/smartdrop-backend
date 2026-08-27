@@ -39,6 +39,8 @@ class PriceSubscriptionManager {
     this._connectionsByIp = new Map(); // ip → number
     this._previousPrices = new Map(); // assetKey → number
     this._pingTimer = null;
+    this._draining = false;
+    this._drainStats = { warned: 0, closed: 0, forceClosed: 0 };
   }
 
   _getClientIp(req) {
@@ -53,8 +55,13 @@ class PriceSubscriptionManager {
     return socket?.remoteAddress || 'unknown';
   }
 
-  /** Register a new WebSocket connection. Returns false when at capacity. */
+  /** Register a new WebSocket connection. Returns false when at capacity or draining. */
   add(ws, req = {}) {
+    if (this._draining) {
+      ws.close(1013, 'Server shutting down');
+      return false;
+    }
+
     const clientIp = this._getClientIp(req).replace(/^::ffff:/, '');
     const currentByIp = this._connectionsByIp.get(clientIp) || 0;
 
@@ -208,34 +215,59 @@ class PriceSubscriptionManager {
 
   /**
    * Gracefully drain all connected clients during server shutdown.
-   * Sends a close frame with a warning reason, then force-closes any
-   * connections still open after `drainTimeoutMs` (issue #248).
+   * Broadcasts a shutdown warning, then sends close frames, and force-closes
+   * any connections still open after `drainTimeoutMs` (issue #248).
    */
   drain(drainTimeoutMs = 5000) {
     this.stopHeartbeat();
+    this._draining = true;
     const clientCount = this._clients.size;
     if (clientCount === 0) return Promise.resolve();
 
+    this._drainStats = { warned: clientCount, closed: 0, forceClosed: 0 };
     logger.info('Draining WebSocket connections', { count: clientCount, drain_timeout_ms: drainTimeoutMs });
 
+    // Phase 1: Broadcast shutdown warning so clients can prepare
     for (const [ws] of this._clients) {
       try {
-        ws.close(1001, 'Server shutting down');
+        this._send(ws, { type: 'server_shutdown', message: 'Server is shutting down', drain_timeout_ms: drainTimeoutMs });
       } catch {
         // already closed or errored — ignore
       }
     }
 
+    // Phase 2: After a brief grace period for clients to finish in-flight work,
+    // send close frames to initiate orderly disconnection
+    const closeDelayMs = Math.min(1000, drainTimeoutMs / 2);
     return new Promise((resolve) => {
+      const closeTimer = setTimeout(() => {
+        for (const [ws] of this._clients) {
+          try {
+            ws.close(1001, 'Server shutting down');
+            this._drainStats.closed++;
+          } catch {
+            // already closed or errored — ignore
+          }
+        }
+      }, closeDelayMs);
+
+      closeTimer.unref();
+
       const deadline = setTimeout(() => {
+        const remaining = this._clients.size;
         for (const [ws] of this._clients) {
           try { ws.terminate(); } catch { /* ignore */ }
+          this._drainStats.forceClosed++;
         }
         this._clients.clear();
         this._clientIpBySocket.clear();
         this._connectionsByIp.clear();
         updateGauge(-clientCount);
-        logger.info('WebSocket drain complete (force-closed remaining)', { force_closed: clientCount });
+        logger.info('WebSocket drain complete', {
+          total: clientCount,
+          gracefully_closed: this._drainStats.closed,
+          force_closed: remaining,
+        });
         resolve();
       }, drainTimeoutMs);
 
@@ -245,6 +277,14 @@ class PriceSubscriptionManager {
 
   get connectionCount() {
     return this._clients.size;
+  }
+
+  get isDraining() {
+    return this._draining;
+  }
+
+  get drainStats() {
+    return { ...this._drainStats };
   }
 }
 
