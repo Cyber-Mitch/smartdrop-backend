@@ -59,9 +59,14 @@ function isPrivateTarget(hostname) {
   return PRIVATE_HOSTNAME_RE.test(hostname) || PRIVATE_IP_RE.test(hostname);
 }
 
+const CONTROL_CHAR_RE = /[\x00-\x08\x0E-\x1F\x7F]/;
+
 const httpUrlSchema = z
   .string()
   .trim()
+  .refine((value) => !CONTROL_CHAR_RE.test(value), {
+    message: 'URL must not contain control characters',
+  })
   .refine((value) => {
     try {
       const url = new URL(value);

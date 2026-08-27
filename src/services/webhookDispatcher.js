@@ -217,6 +217,14 @@ async function deliverToWebhook(webhook, eventType, eventId, payload) {
   return attempt(delivery.id);
 }
 
+const DISPATCH_CONCURRENCY = parseInt(process.env.WEBHOOK_DISPATCH_CONCURRENCY, 10) || 10;
+
+async function processBatch(batch, eventType, eventId, payload) {
+  return Promise.allSettled(
+    batch.map((webhook) => deliverToWebhook(webhook, eventType, eventId, payload))
+  );
+}
+
 async function dispatch({ event_type: eventType, event_id: eventId, data }) {
   if (!events.isKnownEvent(eventType)) {
     logger.warn('Dispatch skipped, unknown event type', { event_type: eventType });
@@ -226,7 +234,6 @@ async function dispatch({ event_type: eventType, event_id: eventId, data }) {
     throw new Error('event_id is required to dispatch a webhook event');
   }
 
-  // Deduplication: skip if this event has already been dispatched
   const dedupKey = `webhook:dispatched:${eventId}`;
   const alreadyDispatched = await cache.get(dedupKey);
   if (alreadyDispatched) {
@@ -251,14 +258,16 @@ async function dispatch({ event_type: eventType, event_id: eventId, data }) {
     data: data || {},
   };
 
-  const results = await Promise.allSettled(
-    targets.map((webhook) => deliverToWebhook(webhook, eventType, eventId, payload))
-  );
+  const allResults = [];
+  for (let i = 0; i < targets.length; i += DISPATCH_CONCURRENCY) {
+    const batch = targets.slice(i, i + DISPATCH_CONCURRENCY);
+    const batchResults = await processBatch(batch, eventType, eventId, payload);
+    allResults.push(...batchResults);
+  }
 
-  // Mark event as dispatched for deduplication (expire after 24h)
   await cache.set(dedupKey, Date.now(), 86400);
 
-  return results.map((result, i) => {
+  return allResults.map((result, i) => {
     const webhook_id = targets[i].id;
     if (result.status === 'fulfilled') {
       return { webhook_id, delivery: result.value, error: null };
