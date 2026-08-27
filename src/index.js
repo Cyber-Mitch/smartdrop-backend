@@ -1,6 +1,7 @@
 'use strict';
 
 const express = require('express');
+const compression = require('compression');
 const helmet = require('helmet');
 const config = require('./config');
 const { version: appVersion } = require('../package.json');
@@ -72,6 +73,7 @@ let server = {
 app.use(requestIdMiddleware);
 app.use(requestLoggerMiddleware);
 app.use(requestMetricsMiddleware);
+app.use(compression());
 app.use(helmet());
 app.use(buildCorsMiddleware(config.corsAllowedOrigins));
 app.use(express.json({ limit: config.airdrops.jsonMaxBytes }));
@@ -203,9 +205,10 @@ app.use('/api/v1', apiKeyLimit);
 app.use('/api/v1', globalApiLimit);
 app.use('/api/v1', pricesRouter);
 app.use('/api/v1', keysRouter);
-app.use('/api/v1/alerts', requireApiKey());
+app.use('/api/v1/alerts', requireApiKey({ scopes: ['alerts'] }));
 app.use('/api/v1', alertsRouter);
 app.use('/api/v1', indexerRouter);
+app.use('/api/v1/webhooks', requireApiKey({ scopes: ['webhooks'] }));
 app.use('/api/v1', webhooksRouter);
 app.use('/api/v1', airdropsRouter);
 app.use('/api-docs', globalApiLimit);
