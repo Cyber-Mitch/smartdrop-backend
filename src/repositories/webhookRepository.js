@@ -66,7 +66,7 @@ function normalize(record) {
   };
 }
 
-async function create({ url, events, secret, description, filters }) {
+async function create({ url, events, secret, description, filters, owner_ip }) {
   const id = generateId();
   const now = new Date().toISOString();
   const record = {
@@ -77,6 +77,10 @@ async function create({ url, events, secret, description, filters }) {
     active: true,
     description: description || null,
     filters: filters || null,
+    // Persisted so remove() can clean up the per-owner index, and so the
+    // per-subscriber cap enforced in routes/webhooks.js actually has an
+    // index to count.
+    owner_ip: owner_ip || null,
     created_at: now,
     updated_at: now,
   };

@@ -90,6 +90,7 @@ router.post('/webhooks', validate(webhookCreateBodySchema), async (req, res, nex
       secret,
       description: body.description,
       filters: body.filters,
+      owner_ip: ownerIp,
     });
 
     const response = {
