@@ -102,6 +102,9 @@ const keyCreateBodySchema = z.object({
     .array(z.string().trim().min(1))
     .nonempty()
     .optional(),
+  // Sizes the key's own rate limit bucket (issue #251). Enumerated from
+  // configuration so adding a tier does not require touching validation.
+  tier: z.enum(Object.keys(config.apiKeyRateLimit.tiers)).optional(),
 });
 
 const alertCreateBodySchema = z.object({

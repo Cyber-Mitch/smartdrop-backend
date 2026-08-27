@@ -49,7 +49,15 @@ async function listKeys() {
   return records.filter(Boolean).map(sanitize);
 }
 
-async function createKey({ label, scopes = ['default'] }) {
+function normalizeTier(tier) {
+  const tiers = config.apiKeyRateLimit.tiers;
+  if (typeof tier === 'string' && Object.prototype.hasOwnProperty.call(tiers, tier)) {
+    return tier;
+  }
+  return config.apiKeyRateLimit.defaultTier;
+}
+
+async function createKey({ label, scopes = ['default'], tier }) {
   const apiKey = generateApiKey();
   const hashed = hashApiKey(apiKey);
   const now = new Date().toISOString();
@@ -59,6 +67,8 @@ async function createKey({ label, scopes = ['default'] }) {
     key_prefix: apiKey.slice(0, 8),
     key_hash: hashed,
     scopes,
+    // Sizes this key's own rate limit bucket (issue #251).
+    tier: normalizeTier(tier),
     created_at: now,
     last_used_at: null,
   };
@@ -103,6 +113,7 @@ async function validateApiKey(apiKey) {
       label: 'Bootstrap admin key',
       key_prefix: apiKey.slice(0, 8),
       scopes: ['admin'],
+      tier: 'admin',
       created_at: null,
       last_used_at: new Date().toISOString(),
     };
@@ -115,6 +126,12 @@ async function validateApiKey(apiKey) {
   const record = await getKey(id);
   if (!record || record.key_hash !== hashed) return null;
 
+  // Keys created before tiers existed have no `tier`; resolve them to the
+  // default tier rather than leaving the rate limiter to guess.
+  if (!record.tier) {
+    record.tier = config.apiKeyRateLimit.defaultTier;
+  }
+
   return touch(record);
 }
 
@@ -123,6 +140,7 @@ module.exports = {
   getKey,
   hashApiKey,
   listKeys,
+  normalizeTier,
   revokeKey,
   validateApiKey,
 };

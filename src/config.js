@@ -114,6 +114,13 @@ const env = cleanEnv(rawEnv, {
   // requestLogger.js, in addition to the routine per-request log (issue
   // #244) — so slow requests are greppable/alertable without external APM.
   SLOW_REQUEST_THRESHOLD_MS: num({ default: 1000 }),
+  // Per-API-key rate limit tiers (issue #251). Each authenticated key is
+  // metered in its own bucket sized by the key's tier, so one abusive key
+  // can no longer exhaust the shared IP-keyed bucket for everybody else.
+  API_KEY_RATELIMIT_WINDOW_SECONDS: positiveInteger({ default: 60 }),
+  API_KEY_RATELIMIT_FREE_MAX: positiveInteger({ default: 100 }),
+  API_KEY_RATELIMIT_PRO_MAX: positiveInteger({ default: 1000 }),
+  API_KEY_RATELIMIT_ADMIN_MAX: positiveInteger({ default: 10000 }),
 });
 
 const usdcIssuer = env.USDC_ISSUER;
@@ -205,6 +212,17 @@ module.exports = {
   },
   auth: {
     adminApiKey: env.ADMIN_API_KEY,
+  },
+  apiKeyRateLimit: {
+    windowSeconds: env.API_KEY_RATELIMIT_WINDOW_SECONDS,
+    // `free` is the tier assigned to any key created without an explicit
+    // tier, so existing keys keep working after this change.
+    defaultTier: 'free',
+    tiers: {
+      free: env.API_KEY_RATELIMIT_FREE_MAX,
+      pro: env.API_KEY_RATELIMIT_PRO_MAX,
+      admin: env.API_KEY_RATELIMIT_ADMIN_MAX,
+    },
   },
   sentryDsn: env.SENTRY_DSN,
   slowRequestThresholdMs: env.SLOW_REQUEST_THRESHOLD_MS,

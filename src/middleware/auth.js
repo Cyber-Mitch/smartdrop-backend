@@ -39,7 +39,39 @@ function requireApiKey(options = {}) {
   };
 }
 
+/**
+ * Resolves an API key onto `req.apiKey` when one is present, without
+ * rejecting requests that omit or fail authentication (issue #251).
+ *
+ * Authentication itself stays with `requireApiKey` on the routes that need
+ * it. This middleware exists only so the per-key rate limiter can meter a
+ * key from the very first middleware layer — including on routes where
+ * authentication happens further down the stack — instead of validating the
+ * key a second time itself.
+ *
+ * An invalid key resolves to no key at all, so it falls through to the
+ * IP-keyed limiter and is then rejected by `requireApiKey` as before.
+ */
+function attachApiKey() {
+  return async (req, res, next) => {
+    if (req.apiKey) return next();
+
+    const token = extractBearerToken(req.get('authorization'));
+    if (!token) return next();
+
+    try {
+      const apiKey = await apiKeys.validateApiKey(token);
+      if (apiKey) req.apiKey = apiKey;
+    } catch (err) {
+      // Never fail the request here — `requireApiKey` owns rejection.
+      logger.warn('Optional API key resolution failed', { error: err.message });
+    }
+    return next();
+  };
+}
+
 module.exports = {
   requireApiKey,
+  attachApiKey,
   extractBearerToken,
 };
