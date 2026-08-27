@@ -9,13 +9,18 @@ function extractBearerToken(header) {
 }
 
 function hasScopes(apiKey, requiredScopes) {
-  if (!requiredScopes.length) return true;
+  if (!requiredScopes || !requiredScopes.length) return true;
   const scopes = new Set(apiKey.scopes || []);
+  if (scopes.has('admin')) return true;
   return requiredScopes.every((scope) => scopes.has(scope));
 }
 
 function requireApiKey(options = {}) {
-  const requiredScopes = options.scopes || [];
+  const requiredScopes = Array.isArray(options)
+    ? options
+    : typeof options === 'string'
+      ? [options]
+      : options.scopes || [];
 
   return async (req, res, next) => {
     const token = extractBearerToken(req.get('authorization'));
@@ -24,10 +29,19 @@ function requireApiKey(options = {}) {
     }
 
     try {
-      const apiKey = await apiKeys.validateApiKey(token);
-      if (!apiKey || !hasScopes(apiKey, requiredScopes)) {
+      const apiKey = req.apiKey || (await apiKeys.validateApiKey(token));
+      if (!apiKey) {
         logger.warn('Rejected API key authentication', { key_prefix: token.slice(0, 8) });
         return next(new AppError('UNAUTHORIZED', 'Missing or invalid API key', 401));
+      }
+
+      if (!hasScopes(apiKey, requiredScopes)) {
+        logger.warn('Rejected API key due to insufficient scopes', {
+          key_prefix: token.slice(0, 8),
+          requiredScopes,
+          actualScopes: apiKey.scopes,
+        });
+        return next(new AppError('FORBIDDEN', 'Insufficient API key scope', 403));
       }
 
       req.apiKey = apiKey;

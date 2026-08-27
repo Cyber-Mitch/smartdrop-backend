@@ -3,10 +3,12 @@
 const ERROR_CODES = Object.freeze({
   VALIDATION_ERROR: { statusCode: 400 },
   UNAUTHORIZED: { statusCode: 401 },
+  FORBIDDEN: { statusCode: 403 },
   NOT_FOUND: { statusCode: 404 },
   PAYLOAD_TOO_LARGE: { statusCode: 413 },
   RATE_LIMITED: { statusCode: 429 },
   UPSTREAM_ERROR: { statusCode: 502 },
+  TIMEOUT: { statusCode: 504 },
   INTERNAL_ERROR: { statusCode: 500 },
 });
 
