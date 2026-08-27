@@ -9,6 +9,7 @@ const dispatcher = require('../services/webhookDispatcher');
 const signatureService = require('../services/webhookSignature');
 const { probeReachability } = require('../services/webhook');
 const buildRateLimit = require('../middleware/rateLimit');
+const { routeTimeout } = require('../middleware/timeout');
 const AppError = require('../errors/AppError');
 const { paginateResponse } = require('../utils/paginate');
 const {
@@ -68,17 +69,21 @@ function publicView(webhook) {
   };
 }
 
-router.post('/webhooks', validate(webhookCreateBodySchema), async (req, res, next) => {
+router.post('/webhooks', routeTimeout(), validate(webhookCreateBodySchema), async (req, res, next) => {
   try {
     const body = req.validated.body;
     const ownerIp = clientIpFromRequest(req);
     const existingCount = await webhookRepo.countByOwner(ownerIp);
     if (existingCount >= config.webhooks.maxPerSubscriber) {
+      // Distinct from RATE_LIMITED: this is a standing quota on how many
+      // webhooks a subscriber may own, not a request rate. Waiting and
+      // retrying will never clear it — the client must delete a webhook.
+      // owner_ip is deliberately not echoed back in the response details.
       return next(new AppError(
-        'RATE_LIMITED',
+        'WEBHOOK_LIMIT_EXCEEDED',
         `Webhook limit of ${config.webhooks.maxPerSubscriber} per subscriber exceeded`,
         429,
-        { limit: config.webhooks.maxPerSubscriber, owner_ip: ownerIp },
+        { limit: config.webhooks.maxPerSubscriber, current: existingCount },
       ));
     }
 
@@ -125,7 +130,7 @@ router.get('/webhooks', validatePaginationQuery, async (req, res, next) => {
 router.get('/webhooks/:id', validateRouteIdParams, async (req, res, next) => {
   try {
     const webhook = await webhookRepo.findById(req.params.id);
-    if (!webhook) return next(new AppError('NOT_FOUND', 'Webhook not found', 404));
+    if (!webhook) return next(new AppError('WEBHOOK_NOT_FOUND', 'Webhook not found', 404));
     return res.json(publicView(webhook));
   } catch (err) {
     return next(err);
@@ -136,7 +141,7 @@ router.patch('/webhooks/:id', validateRouteIdParams, validate(webhookPatchBodySc
   try {
     const patch = req.validated.body;
     const updated = await webhookRepo.update(req.params.id, patch);
-    if (!updated) return next(new AppError('NOT_FOUND', 'Webhook not found', 404));
+    if (!updated) return next(new AppError('WEBHOOK_NOT_FOUND', 'Webhook not found', 404));
     return res.json(publicView(updated));
   } catch (err) {
     return next(err);
@@ -146,17 +151,17 @@ router.patch('/webhooks/:id', validateRouteIdParams, validate(webhookPatchBodySc
 router.delete('/webhooks/:id', validateRouteIdParams, async (req, res, next) => {
   try {
     const deleted = await webhookRepo.remove(req.params.id);
-    if (!deleted) return next(new AppError('NOT_FOUND', 'Webhook not found', 404));
+    if (!deleted) return next(new AppError('WEBHOOK_NOT_FOUND', 'Webhook not found', 404));
     return res.json({ deleted: true, id: req.params.id });
   } catch (err) {
     return next(err);
   }
 });
 
-router.post('/webhooks/:id/test', validateRouteIdParams, testLimit, async (req, res, next) => {
+router.post('/webhooks/:id/test', routeTimeout(), validateRouteIdParams, testLimit, async (req, res, next) => {
   try {
     const delivery = await dispatcher.sendTest(req.params.id);
-    if (!delivery) return next(new AppError('NOT_FOUND', 'Webhook not found', 404));
+    if (!delivery) return next(new AppError('WEBHOOK_NOT_FOUND', 'Webhook not found', 404));
     return res.status(202).json({
       delivery_id: delivery.id,
       status: delivery.status,
@@ -172,7 +177,7 @@ router.post('/webhooks/:id/test', validateRouteIdParams, testLimit, async (req, 
 router.get('/webhooks/:id/deliveries', validateRouteIdParams, validate(webhookDeliveriesQuerySchema, 'query'), async (req, res, next) => {
   try {
     const webhook = await webhookRepo.findById(req.params.id);
-    if (!webhook) return next(new AppError('NOT_FOUND', 'Webhook not found', 404));
+    if (!webhook) return next(new AppError('WEBHOOK_NOT_FOUND', 'Webhook not found', 404));
     const { limit, status } = req.validated.query;
     const deliveries = await deliveryRepo.listByWebhook(req.params.id, { limit, status });
     return res.json({ deliveries });

@@ -30,6 +30,14 @@ function errorHandler(err, req, res, _next) {
     message = err.message || 'Request rejected';
   }
 
+  // Clients switch on `code`, so an unregistered value would be a code they
+  // cannot have written a handler for. Anything not in the registry is
+  // reported as INTERNAL_ERROR rather than leaked as a one-off string.
+  if (!AppError.isKnownCode(code)) {
+    logger.error('Unregistered error code, reporting as INTERNAL_ERROR', { attempted_code: code });
+    code = 'INTERNAL_ERROR';
+  }
+
   if ((!isAppError && !isPayloadTooLarge) || status >= 500) {
     logger.error('Unhandled error', { error: err.message, stack: err.stack, request_id: req.id });
     errorTracker.captureException(err, { request_id: req.id, path: req.originalUrl, method: req.method, status });

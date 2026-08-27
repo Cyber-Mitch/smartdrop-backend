@@ -17,6 +17,7 @@ const {
   routeIdParamsSchema,
 } = require('../validation/schemas');
 const buildRateLimit = require('../middleware/rateLimit');
+const { routeTimeout } = require('../middleware/timeout');
 const { StrKey } = require('stellar-sdk');
 const { paginateResponse } = require('../utils/paginate');
 
@@ -26,6 +27,9 @@ const STROOPS_PER_UNIT = 10_000_000n;
 
 const router = express.Router();
 const CSV_PARSE_CHUNK_BYTES = 64 * 1024;
+// Cap on how many bad rows are enumerated back to the uploader — enough to
+// fix a broken file, without echoing a 10,000-line error list.
+const MAX_REPORTED_INVALID_ROWS = 20;
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: config.airdrops.csvMaxBytes },
@@ -105,39 +109,142 @@ function validateUtf8(buffer) {
     const decoder = new TextDecoder('utf-8', { fatal: true });
     decoder.decode(buffer);
   } catch {
-    throw new AppError('VALIDATION_ERROR', 'CSV file must be valid UTF-8 encoded', 400);
+    throw new AppError('CSV_INVALID_ENCODING', 'CSV file must be valid UTF-8 encoded', 400);
   }
 }
 
+// Accepted spellings for the two required columns. csv-parser hands back
+// header names verbatim, so case and surrounding whitespace are normalized
+// here rather than enumerating every variant at each lookup.
+const ADDRESS_COLUMN = 'address';
+const AMOUNT_COLUMN = 'amount';
+
+function normalizeRow(row) {
+  const normalized = {};
+  for (const [key, value] of Object.entries(row)) {
+    normalized[String(key).trim().toLowerCase()] = value;
+  }
+  return normalized;
+}
+
+/**
+ * Parses recipient CSV, rejecting malformed input instead of skipping it.
+ *
+ * Rows that failed validation used to be dropped silently, so a file whose
+ * columns were misnamed — or whose amounts were all unparseable — returned
+ * 200 OK having imported nothing, with no way for the uploader to tell that
+ * from a successful import. Structure is now checked up front (issue #254)
+ * and bad rows are reported with their line numbers.
+ *
+ * Parsing stays streaming: rows are consumed from the pipeline as they are
+ * produced, and the row cap is enforced during iteration so an oversized
+ * file is abandoned partway rather than fully materialized first.
+ */
 async function parseCSV(buffer) {
   validateUtf8(buffer);
   const results = [];
+  const invalidRows = [];
   let rowCount = 0;
+  let headerChecked = false;
+
   const chunks = (function* chunkBuffer() {
     for (let offset = 0; offset < buffer.length; offset += CSV_PARSE_CHUNK_BYTES) {
       yield buffer.subarray(offset, offset + CSV_PARSE_CHUNK_BYTES);
     }
   }());
 
-  await pipeline(Readable.from(chunks), csv(), async (rows) => {
-    for await (const data of rows) {
-      rowCount += 1;
-      if (rowCount > config.airdrops.maxRecipients) {
-        throw new AppError('VALIDATION_ERROR', 'recipients cannot exceed 10,000', 400);
-      }
+  // Throwing out of the pipeline consumer while the source still has data
+  // makes stream/promises reject with an AbortError, discarding the original
+  // error — which would surface every rejected CSV as a 500 instead of the
+  // intended 400. The AppError is stashed here and rethrown once the
+  // pipeline has settled, so the reason for stopping survives.
+  let abortReason = null;
+  const stopWith = (appError) => {
+    abortReason = appError;
+    return appError;
+  };
 
-      const address = data.address || data.Address || data.ADDRESS;
-      const amount = parseFloat(data.amount || data.Amount || data.AMOUNT);
-      if (address && Number.isFinite(amount) && amount > 0) {
-        results.push({ address, amount });
+  try {
+    await pipeline(Readable.from(chunks), csv(), async (rows) => {
+      for await (const data of rows) {
+        const row = normalizeRow(data);
+
+        // Header presence is knowable from the first row; failing here means
+        // the rest of the file is not worth parsing at all.
+        if (!headerChecked) {
+          headerChecked = true;
+          const missing = [ADDRESS_COLUMN, AMOUNT_COLUMN]
+            .filter((column) => !Object.prototype.hasOwnProperty.call(row, column));
+          if (missing.length > 0) {
+            throw stopWith(new AppError('CSV_MISSING_COLUMNS', 'CSV is missing required columns', 400, {
+              missing_columns: missing,
+              required_columns: [ADDRESS_COLUMN, AMOUNT_COLUMN],
+              found_columns: Object.keys(row),
+            }));
+          }
+        }
+
+        rowCount += 1;
+        if (rowCount > config.airdrops.maxRecipients) {
+          throw stopWith(new AppError(
+            'RECIPIENT_LIMIT_EXCEEDED',
+            `CSV cannot exceed ${config.airdrops.maxRecipients} recipients`,
+            400,
+            { max_recipients: config.airdrops.maxRecipients },
+          ));
+        }
+
+        const address = row[ADDRESS_COLUMN];
+        const rawAmount = row[AMOUNT_COLUMN];
+        const amount = parseFloat(rawAmount);
+
+        // +1 for the header line, so the number matches what the uploader
+        // sees in a text editor.
+        const line = rowCount + 1;
+        if (!address || String(address).trim() === '') {
+          invalidRows.push({ line, reason: 'missing address' });
+        } else if (!Number.isFinite(amount)) {
+          invalidRows.push({ line, reason: 'amount is not a number' });
+        } else if (amount <= 0) {
+          invalidRows.push({ line, reason: 'amount must be greater than zero' });
+        } else {
+          results.push({ address: String(address).trim(), amount });
+        }
+
+        // Bail out early rather than accumulating an unbounded error list for
+        // a file that is clearly not going to be accepted.
+        if (invalidRows.length > MAX_REPORTED_INVALID_ROWS) {
+          throw stopWith(new AppError('CSV_MALFORMED', 'CSV contains too many invalid rows', 400, {
+            invalid_rows: invalidRows.slice(0, MAX_REPORTED_INVALID_ROWS),
+            truncated: true,
+          }));
+        }
       }
-    }
-  });
+    });
+  } catch (err) {
+    // An AbortError here is the stream tearing down after our own throw;
+    // the real reason was stashed by stopWith. Anything else is a genuine
+    // stream or parser failure and propagates unchanged.
+    if (abortReason) throw abortReason;
+    throw err;
+  }
+
+  if (rowCount === 0) {
+    throw new AppError('CSV_EMPTY', 'CSV contains no data rows', 400);
+  }
+
+  if (invalidRows.length > 0) {
+    throw new AppError('CSV_MALFORMED', 'CSV contains invalid rows', 400, {
+      invalid_rows: invalidRows,
+      valid_rows: results.length,
+      total_rows: rowCount,
+    });
+  }
 
   return results;
 }
 
-router.post('/airdrops', createAirdropLimit, validateWithCurrentLedger(airdropCreateBodySchema), async (req, res, next) => {
+router.post('/airdrops', routeTimeout(), createAirdropLimit, validateWithCurrentLedger(airdropCreateBodySchema), async (req, res, next) => {
   try {
     const airdrop = await airdropsService.create(req.validated.body);
     return res.status(201).json(airdrop);
@@ -162,7 +269,7 @@ router.get('/airdrops/:id', validateRouteIdParams, async (req, res, next) => {
   try {
     const airdrop = await airdropsService.get(req.params.id);
     if (!airdrop) {
-      return next(new AppError('NOT_FOUND', 'Airdrop not found', 404));
+      return next(new AppError('AIRDROP_NOT_FOUND', 'Airdrop not found', 404));
     }
     return res.json(airdrop);
   } catch (err) {
@@ -175,7 +282,7 @@ router.patch('/airdrops/:id', validateRouteIdParams, validateWithCurrentLedger(a
   try {
     const airdrop = await airdropsService.update(req.params.id, req.validated.body);
     if (!airdrop) {
-      return next(new AppError('NOT_FOUND', 'Airdrop not found', 404));
+      return next(new AppError('AIRDROP_NOT_FOUND', 'Airdrop not found', 404));
     }
     return res.json(airdrop);
   } catch (err) {
@@ -188,7 +295,7 @@ router.delete('/airdrops/:id', validateRouteIdParams, async (req, res, next) => 
   try {
     const deleted = await airdropsService.remove(req.params.id);
     if (!deleted) {
-      return next(new AppError('NOT_FOUND', 'Airdrop not found', 404));
+      return next(new AppError('AIRDROP_NOT_FOUND', 'Airdrop not found', 404));
     }
     return res.json({ deleted: true, id: req.params.id });
   } catch (err) {
@@ -201,7 +308,7 @@ router.post('/airdrops/:id/cancel', validateRouteIdParams, async (req, res, next
   try {
     const airdrop = await airdropsService.cancel(req.params.id);
     if (!airdrop) {
-      return next(new AppError('NOT_FOUND', 'Airdrop not found', 404));
+      return next(new AppError('AIRDROP_NOT_FOUND', 'Airdrop not found', 404));
     }
     return res.json(airdrop);
   } catch (err) {
@@ -210,11 +317,11 @@ router.post('/airdrops/:id/cancel', validateRouteIdParams, async (req, res, next
   }
 });
 
-router.post('/airdrops/:id/recipients', validateRouteIdParams, addRecipientsLimit, uploadRecipientsFile, validateRecipientBody, async (req, res, next) => {
+router.post('/airdrops/:id/recipients', routeTimeout(), validateRouteIdParams, addRecipientsLimit, uploadRecipientsFile, validateRecipientBody, async (req, res, next) => {
   try {
     const airdrop = await airdropsService.get(req.params.id);
     if (!airdrop) {
-      return next(new AppError('NOT_FOUND', 'Airdrop not found', 404));
+      return next(new AppError('AIRDROP_NOT_FOUND', 'Airdrop not found', 404));
     }
 
     let recipients = [];
@@ -272,7 +379,7 @@ router.get('/airdrops/:id/recipients', validateRouteIdParams, validatePagination
   try {
     const airdrop = await airdropsService.get(req.params.id);
     if (!airdrop) {
-      return next(new AppError('NOT_FOUND', 'Airdrop not found', 404));
+      return next(new AppError('AIRDROP_NOT_FOUND', 'Airdrop not found', 404));
     }
 
     const { page, limit } = req.validated.query;
