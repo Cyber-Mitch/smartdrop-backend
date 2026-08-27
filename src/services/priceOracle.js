@@ -164,7 +164,36 @@ function resetCircuitBreakers() {
   }
 }
 
+const QUERIED_ASSETS_KEY = 'queried_assets';
+
+async function recordQueriedAsset(assetCode, issuer = null) {
+  try {
+    if (!cache.isConnected()) return;
+    const redis = cache.getClient();
+    const key = issuer ? `${assetCode}:${issuer}` : assetCode;
+    await redis.sadd(QUERIED_ASSETS_KEY, key);
+  } catch (err) {
+    logger.warn('Failed to record queried asset', { assetCode, issuer, error: err.message });
+  }
+}
+
+async function getQueriedAssets() {
+  try {
+    if (!cache.isConnected()) return [];
+    const redis = cache.getClient();
+    const members = await redis.smembers(QUERIED_ASSETS_KEY);
+    return (members || []).map((entry) => {
+      const [code, issuer] = entry.split(':');
+      return { code, issuer: issuer || null };
+    });
+  } catch (err) {
+    logger.warn('Failed to fetch queried assets', { error: err.message });
+    return [];
+  }
+}
+
 async function getPrice(assetCode, issuer = null) {
+  recordQueriedAsset(assetCode, issuer);
   const cacheKey = buildCacheKey(assetCode, issuer);
   let redisUnavailable = false;
 
@@ -377,6 +406,8 @@ module.exports = {
   getCircuitStates,
   resetCircuitBreakers,
   refreshAllCachedPrices,
+  getQueriedAssets,
+  recordQueriedAsset,
   // Internal helpers exported for unit testing.
   median,
   detectAnomaly,
