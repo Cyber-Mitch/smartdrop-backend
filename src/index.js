@@ -1,6 +1,7 @@
 'use strict';
 
 const express = require('express');
+const compression = require('compression');
 const helmet = require('helmet');
 const config = require('./config');
 const { version: appVersion } = require('../package.json');
@@ -71,6 +72,7 @@ let server = {
 app.use(requestIdMiddleware);
 app.use(requestLoggerMiddleware);
 app.use(requestMetricsMiddleware);
+app.use(compression());
 app.use(helmet());
 app.use(buildCorsMiddleware(config.corsAllowedOrigins));
 app.use(express.json({ limit: config.airdrops.jsonMaxBytes }));
