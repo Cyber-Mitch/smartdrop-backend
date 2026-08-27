@@ -5,6 +5,7 @@ const request = require('supertest');
 jest.mock('../src/services/cache', () => ({
   isConnected: jest.fn(() => false),
   disconnect: jest.fn(),
+  getConcurrencyStats: jest.fn(() => ({ active: 0, waiting: 0, available: 50, max: 50 })),
 }));
 
 jest.mock('../src/services/priceOracle', () => ({
@@ -145,6 +146,7 @@ describe('GET /health – status computation', () => {
     jest.mock('../src/services/cache', () => ({
       isConnected: () => true,
       disconnect: jest.fn(),
+      getConcurrencyStats: () => ({ active: 0, waiting: 0, available: 50, max: 50 }),
     }));
     jest.mock('../src/jobs/priceRefresh', () => ({
       start: jest.fn(),
@@ -170,6 +172,7 @@ describe('GET /health – status computation', () => {
     jest.mock('../src/services/cache', () => ({
       isConnected: () => false,
       disconnect: jest.fn(),
+      getConcurrencyStats: () => ({ active: 0, waiting: 0, available: 50, max: 50 }),
     }));
     jest.mock('../src/jobs/priceRefresh', () => ({
       start: jest.fn(),
@@ -196,6 +199,7 @@ describe('GET /health – status computation', () => {
     jest.mock('../src/services/cache', () => ({
       isConnected: () => true,
       disconnect: jest.fn(),
+      getConcurrencyStats: () => ({ active: 0, waiting: 0, available: 50, max: 50 }),
     }));
     jest.mock('../src/jobs/priceRefresh', () => ({
       start: jest.fn(),
@@ -223,6 +227,7 @@ describe('GET /health – status computation', () => {
     jest.mock('../src/services/cache', () => ({
       isConnected: () => true,
       disconnect: jest.fn(),
+      getConcurrencyStats: () => ({ active: 0, waiting: 0, available: 50, max: 50 }),
     }));
     jest.mock('../src/jobs/priceRefresh', () => ({
       start: jest.fn(),
@@ -249,6 +254,7 @@ describe('GET /health – status computation', () => {
     jest.mock('../src/services/cache', () => ({
       isConnected: () => false,
       disconnect: jest.fn(),
+      getConcurrencyStats: () => ({ active: 0, waiting: 0, available: 50, max: 50 }),
     }));
     jest.mock('../src/jobs/priceRefresh', () => ({
       start: jest.fn(),
